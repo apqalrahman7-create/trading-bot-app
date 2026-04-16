@@ -1,109 +1,90 @@
 import streamlit as st
 import ccxt
-import time
 import pandas as pd
+import time
 
-# --- 1. إعدادات الصفحة ---
-st.set_page_config(page_title="بوت MEXC الذكي", layout="wide")
+# --- إعدادات الواجهة ---
+st.set_page_config(page_title="MEXC Smart Bot", layout="wide")
 
-# --- 2. كلاس البوت (المنطق البرمجي) ---
-class SmartTradingBot:
-    def __init__(self, api_key, secret_key):
+class MEXCBot:
+    def __init__(self, api, secret):
         self.exchange = ccxt.mexc({
-            'apiKey': api_key,
-            'secret': secret_key,
+            'apiKey': api,
+            'secret': secret,
             'enableRateLimit': True,
+            'options': {'defaultType': 'spot'} 
         })
-        self.is_running = False
 
-    def get_balances(self):
+    def fetch_data(self):
         try:
-            # جلب رصيد السبوت والفيوتشر
-            spot = self.exchange.fetch_balance({'type': 'spot'})['total'].get('USDT', 0)
-            swap = self.exchange.fetch_balance({'type': 'swap'})['total'].get('USDT', 0)
-            return float(spot), float(swap)
+            # جلب الرصيد الإجمالي (سبوت)
+            bal = self.exchange.fetch_balance()
+            usdt = float(bal['total'].get('USDT', 0))
+            
+            # جلب سعر البيتكوين وتحليله
+            ohlcv = self.exchange.fetch_ohlcv('BTC/USDT', timeframe='5m', limit=20)
+            df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+            ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
+            price = df['c'].iloc[-1]
+            
+            return usdt, price, ema
         except Exception as e:
-            return 0.0, 0.0
+            st.error(f"خطأ في الاتصال: {e}")
+            return 0, 0, 0
 
-    def execute_trade(self, market_type, symbol, side, amount):
+    def trade(self, side, amount):
         try:
-            params = {'type': 'swap'} if market_type == 'futures' else {'type': 'spot'}
             if side == 'buy':
-                return self.exchange.create_market_buy_order(symbol, amount, params)
+                return self.exchange.create_market_buy_order('BTC/USDT', amount)
             else:
-                return self.exchange.create_market_sell_order(symbol, amount, params)
+                return self.exchange.create_market_sell_order('BTC/USDT', amount)
         except Exception as e:
-            return str(e)
+            st.error(f"فشل تنفيذ الصفقة: {e}")
+            return None
 
-# --- 3. واجهة المستخدم (تظهر على الشاشة الرئيسية) ---
-st.title("🤖 مركز تحكم بوت MEXC الذكي")
-st.markdown("---")
+# --- عرض الشاشة الرئيسية ---
+st.title("🤖 بوت التداول الذكي - MEXC")
 
-# لوحة إدخال المفاتيح
-with st.expander("🔐 إعدادات الوصول (API Keys)", expanded=True):
-    col_api, col_sec = st.columns(2)
-    api_key = col_api.text_input("أدخل API Key", type="password")
-    secret_key = col_sec.text_input("أدخل Secret Key", type="password")
+with st.sidebar:
+    st.header("🔑 إعدادات API")
+    api_key = st.text_input("API Key", type="password")
+    secret_key = st.text_input("Secret Key", type="password")
 
 if api_key and secret_key:
-    bot = SmartTradingBot(api_key, secret_key)
-    spot_bal, swap_bal = bot.get_balances()
-    total_bal = spot_bal + swap_bal
+    bot = MEXCBot(api_key, secret_key)
+    usdt, price, ema = bot.fetch_data()
 
-    # عرض الرصيد في مربعات ملونة
-    st.subheader("💰 ملخص المحفظة الحقيقي")
+    # عرض الرصيد والبيانات
     c1, c2, c3 = st.columns(3)
-    c1.metric("رصيد السبوت (Spot)", f"${spot_bal:.2f}")
-    c2.metric("رصيد الفيوتشر (Futures)", f"${swap_bal:.2f}")
-    c3.metric("إجمالي المحفظة", f"${total_bal:.2f}")
+    c1.metric("رصيد USDT", f"${usdt:.2f}")
+    c2.metric("سعر BTC الحالي", f"${price:.2f}")
+    c3.metric("مؤشر EMA", f"${ema:.2f}")
 
-    st.markdown("---")
+    if 'active' not in st.session_state:
+        st.session_state.active = False
 
-    # أزرار التحكم
-    col_start, col_stop = st.columns(2)
+    col_btn1, col_btn2 = st.columns(2)
+    if col_btn1.button("🚀 تشغيل (12 ساعة)", type="primary", use_container_width=True):
+        st.session_state.active = True
     
-    if 'running' not in st.session_state:
-        st.session_state.running = False
+    if col_btn2.button("🛑 إيقاف فوري", use_container_width=True):
+        st.session_state.active = False
 
-    if col_start.button("🚀 ابدأ التداول الآلي (12 ساعة / هدف 10%)", type="primary", use_container_width=True):
-        st.session_state.running = True
-
-    if col_stop.button("🛑 إيقاف فوري وإغلاق الجلسة", use_container_width=True):
-        st.session_state.running = False
-        st.warning("تم إيقاف البوت.")
-
-    # منطقة العمليات المباشرة (Logs)
-    if st.session_state.running:
-        st.info("🔄 البوت يعمل الآن في الخلفية ويحلل السوق...")
-        log_area = st.container()
+    if st.session_state.active:
+        st.info("✅ البوت يعمل الآن ويراقب السوق...")
+        # تنفيذ صفقة حقيقية عند تحقق الشرط
+        if price > ema and usdt > 10:
+            qty = (usdt * 0.95) / price
+            st.warning(f"📈 إشارة شراء! جاري تنفيذ صفقة بـ {qty:.5f} BTC")
+            res = bot.trade('buy', qty)
+            if res: st.success("✅ تمت عملية الشراء بنجاح!")
         
-        initial_total = total_bal
-        target_profit = initial_total * 1.10
-        
-        # حلقة التداول
-        while st.session_state.running:
-            spot, swap = bot.get_balances()
-            current_total = spot + swap
+        elif price < ema:
+            # هنا يمكنك إضافة منطق البيع إذا كان لديك رصيد BTC
+            st.write("🔍 السعر تحت الـ EMA.. في انتظار فرصة.")
             
-            with log_area:
-                st.write(f"🔍 فحص السوق... الرصيد الحالي: ${current_total:.2f}")
-                
-                # فحص الهدف
-                if current_total >= target_profit:
-                    st.success(f"✅ تم تحقيق الهدف! الرصيد: ${current_total:.2f}")
-                    st.session_state.running = False
-                    break
-                
-                # تحليل سريع (مثال للبيتكوين)
-                try:
-                    bars = bot.exchange.fetch_ohlcv('BTC/USDT', timeframe='5m', limit=10)
-                    price = bars[-1][4]
-                    st.write(f"📊 سعر البيتكوين الحالي: ${price}")
-                except:
-                    pass
-
-            time.sleep(30) # فحص كل 30 ثانية
-            st.rerun() # تحديث الشاشة
+        time.sleep(10)
+        st.rerun()
 else:
-    st.warning("⚠️ يرجى إدخال مفاتيح الـ API في الأعلى لتفعيل لوحة التحكم.")
-
+    st.warning("يرجى إدخال المفاتيح في القائمة الجانبية للبدء.")
+    
