@@ -3,6 +3,10 @@ import ccxt
 import time
 import pandas as pd
 
+# --- 1. إعدادات الصفحة ---
+st.set_page_config(page_title="بوت MEXC الذكي", layout="wide")
+
+# --- 2. كلاس البوت (المنطق البرمجي) ---
 class SmartTradingBot:
     def __init__(self, api_key, secret_key):
         self.exchange = ccxt.mexc({
@@ -14,14 +18,14 @@ class SmartTradingBot:
 
     def get_balances(self):
         try:
-            # جلب رصيد السبوت والعقود الآجلة معاً
+            # جلب رصيد السبوت والفيوتشر
             spot = self.exchange.fetch_balance({'type': 'spot'})['total'].get('USDT', 0)
             swap = self.exchange.fetch_balance({'type': 'swap'})['total'].get('USDT', 0)
             return float(spot), float(swap)
-        except: return 0.0, 0.0
+        except Exception as e:
+            return 0.0, 0.0
 
     def execute_trade(self, market_type, symbol, side, amount):
-        """تنفيذ الصفقة في السوق المحدد"""
         try:
             params = {'type': 'swap'} if market_type == 'futures' else {'type': 'spot'}
             if side == 'buy':
@@ -29,56 +33,77 @@ class SmartTradingBot:
             else:
                 return self.exchange.create_market_sell_order(symbol, amount, params)
         except Exception as e:
-            return f"Error: {str(e)}"
+            return str(e)
 
-    def run_automated_logic(self):
-        self.is_running = True
-        spot_bal, swap_bal = self.get_balances()
-        initial_total = spot_bal + swap_bal
-        target_profit = initial_total * 1.10 # هدف 10%
-        
-        # تحديد الأسواق (السبوت والعقود الآجلة)
-        spot_symbol = 'BTC/USDT'
-        futures_symbol = 'BTC/USDT:USDT'
-        
-        yield f"🚀 انطلق البوت! إجمالي الرصيد: ${initial_total:.2f} | الهدف: ${target_profit:.2f}"
+# --- 3. واجهة المستخدم (تظهر على الشاشة الرئيسية) ---
+st.title("🤖 مركز تحكم بوت MEXC الذكي")
+st.markdown("---")
 
-        while self.is_running:
-            current_spot, current_swap = self.get_balances()
-            current_total = current_spot + current_swap
+# لوحة إدخال المفاتيح
+with st.expander("🔐 إعدادات الوصول (API Keys)", expanded=True):
+    col_api, col_sec = st.columns(2)
+    api_key = col_api.text_input("أدخل API Key", type="password")
+    secret_key = col_sec.text_input("أدخل Secret Key", type="password")
+
+if api_key and secret_key:
+    bot = SmartTradingBot(api_key, secret_key)
+    spot_bal, swap_bal = bot.get_balances()
+    total_bal = spot_bal + swap_bal
+
+    # عرض الرصيد في مربعات ملونة
+    st.subheader("💰 ملخص المحفظة الحقيقي")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("رصيد السبوت (Spot)", f"${spot_bal:.2f}")
+    c2.metric("رصيد الفيوتشر (Futures)", f"${swap_bal:.2f}")
+    c3.metric("إجمالي المحفظة", f"${total_bal:.2f}")
+
+    st.markdown("---")
+
+    # أزرار التحكم
+    col_start, col_stop = st.columns(2)
+    
+    if 'running' not in st.session_state:
+        st.session_state.running = False
+
+    if col_start.button("🚀 ابدأ التداول الآلي (12 ساعة / هدف 10%)", type="primary", use_container_width=True):
+        st.session_state.running = True
+
+    if col_stop.button("🛑 إيقاف فوري وإغلاق الجلسة", use_container_width=True):
+        st.session_state.running = False
+        st.warning("تم إيقاف البوت.")
+
+    # منطقة العمليات المباشرة (Logs)
+    if st.session_state.running:
+        st.info("🔄 البوت يعمل الآن في الخلفية ويحلل السوق...")
+        log_area = st.container()
+        
+        initial_total = total_bal
+        target_profit = initial_total * 1.10
+        
+        # حلقة التداول
+        while st.session_state.running:
+            spot, swap = bot.get_balances()
+            current_total = spot + swap
             
-            # عرض التحديث في الشاشة
-            st.write(f"📊 الرصيد الحالي: ${current_total:.2f} | الربح المستهدف: ${target_profit:.2f}")
-
-            # فحص جني الأرباح (10%)
-            if current_total >= target_profit:
-                yield "💰 مبروك! تم تحقيق هدف الـ 10%. جاري تصفية المراكز وإعادة الرصيد..."
-                # (هنا تضاف دالة إغلاق كافة الصفقات المفتوحة)
-                self.is_running = False
-                break
-
-            # --- تحليل السوق واتخاذ القرار ---
-            try:
-                bars = self.exchange.fetch_ohlcv(spot_symbol, timeframe='5m', limit=20)
-                df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-                ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
-                price = df['c'].iloc[-1]
-
-                # إذا كانت الإشارة "شراء" والرصيد في السبوت
-                if price > ema and current_spot > 10:
-                    yield f"📈 إشارة صعود.. شراء في سوق السبوت (Spot) بـ ${current_spot:.2f}"
-                    self.execute_trade('spot', spot_symbol, 'buy', (current_spot * 0.98) / price)
+            with log_area:
+                st.write(f"🔍 فحص السوق... الرصيد الحالي: ${current_total:.2f}")
                 
-                # إذا كانت الإشارة "بيع/شورت" والرصيد في الآجلة
-                elif price < ema and current_swap > 10:
-                    yield f"📉 إشارة هبوط.. فتح صفقة Short في العقود الآجلة بـ ${current_swap:.2f}"
-                    self.execute_trade('futures', futures_symbol, 'sell', (current_swap * 0.98) / price)
+                # فحص الهدف
+                if current_total >= target_profit:
+                    st.success(f"✅ تم تحقيق الهدف! الرصيد: ${current_total:.2f}")
+                    st.session_state.running = False
+                    break
+                
+                # تحليل سريع (مثال للبيتكوين)
+                try:
+                    bars = bot.exchange.fetch_ohlcv('BTC/USDT', timeframe='5m', limit=10)
+                    price = bars[-1][4]
+                    st.write(f"📊 سعر البيتكوين الحالي: ${price}")
+                except:
+                    pass
 
-            except Exception as e:
-                yield f"⚠️ تنبيه: {str(e)}"
-            
             time.sleep(30) # فحص كل 30 ثانية
+            st.rerun() # تحديث الشاشة
+else:
+    st.warning("⚠️ يرجى إدخال مفاتيح الـ API في الأعلى لتفعيل لوحة التحكم.")
 
-# --- واجهة Streamlit ---
-st.title("🤖 بوت MEXC الذكي (سبوت + فيوتشر)")
-# (أضف هنا حقول إدخال الـ API والزر كما في الكود السابق)
