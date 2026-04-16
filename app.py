@@ -2,25 +2,29 @@ import streamlit as st
 import ccxt
 import time
 import pandas as pd
+from datetime import datetime, timedelta
 
-# --- 1. كلاس البوت (المنطق البرمجي) ---
+# --- إعدادات الصفحة ---
+st.set_page_config(page_title="بوت الـ 12 ساعة الذكي", layout="wide")
+
 class TradingBot:
-    def __init__(self, api_key, secret_key):
-        self.exchange = ccxt.binance({  # يمكنك تغيير binance لـ bybit أو غيرها
+    def __init__(self, api_key, secret_key, exchange_id):
+        self.exchange = getattr(ccxt, exchange_id)({
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {'defaultType': 'swap'} # للعقود الآجلة
+            'options': {'defaultType': 'swap'} # تفعيل العقود الآجلة تلقائياً
         })
         self.is_running = False
 
-    def get_balance(self):
+    def get_real_balance(self):
         try:
             balance = self.exchange.fetch_balance()
             return float(balance['total'].get('USDT', 0))
         except: return 0.0
 
     def close_all_positions(self, symbols):
+        """إغلاق كافة الصفقات وإعادة الرصيد للأصول"""
         for symbol in symbols:
             try:
                 positions = self.exchange.fetch_positions([symbol])
@@ -31,22 +35,45 @@ class TradingBot:
                         self.exchange.create_order(symbol, 'market', side, abs(size), params={'reduceOnly': True})
             except: pass
 
-    def run_logic(self):
+    def run_session(self):
         self.is_running = True
-        initial_balance = self.get_balance()
-        target_profit = initial_balance * 1.10
-        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT']
+        start_time = datetime.now()
+        end_time = start_time + timedelta(hours=12)
+        initial_balance = self.get_real_balance()
+        target_balance = initial_balance * 1.10 # هدف 10% ربح
         
-        yield f"🚀 بدأت الجلسة | الرصيد: ${initial_balance:.2f} | الهدف: ${target_profit:.2f}"
+        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+        
+        # حاويات العرض المباشر
+        metrics_placeholder = st.empty()
+        log_placeholder = st.empty()
 
         while self.is_running:
-            current_balance = self.get_balance()
-            if current_balance >= target_profit:
-                yield "✅ تم تحقيق ربح 10%! جاري إغلاق الصفقات..."
+            current_balance = self.get_real_balance()
+            elapsed_time = datetime.now() - start_time
+            remaining_time = end_time - datetime.now()
+            profit_loss = current_balance - initial_balance
+
+            # 1. تحديث الشاشة بالرصيد الحقيقي والأرباح
+            with metrics_placeholder.container():
+                c1, c2, c3 = st.columns(3)
+                c1.metric("الرصيد الحقيقي المباشر", f"${current_balance:.2f}")
+                c2.metric("صافي الربح (تارجت 10%)", f"${profit_loss:.2f}", f"{(profit_loss/initial_balance)*100:.2f}%")
+                c3.metric("الوقت المتبقي", str(remaining_time).split('.')[0])
+
+            # 2. فحص شروط الإغلاق (الربح أو الوقت)
+            if current_balance >= target_balance:
+                st.balloons()
+                yield "💰 تم تحقيق هدف الـ 10%! جاري تصفية الصفقات وإعادة الأصول..."
                 self.close_all_positions(symbols)
-                self.is_running = False
+                break
+            
+            if datetime.now() >= end_time:
+                yield "⏱️ انتهت الـ 12 ساعة. جاري إغلاق الجلسة وتأمين الرصيد..."
+                self.close_all_positions(symbols)
                 break
 
+            # 3. منطق التداول التلقائي (الخلفية)
             for symbol in symbols:
                 try:
                     bars = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=20)
@@ -54,60 +81,41 @@ class TradingBot:
                     ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
                     price = df['c'].iloc[-1]
 
+                    # تنفيذ صفقات بكامل المحفظة (مع إدارة مخاطرة بسيطة)
+                    order_size = (current_balance * 0.1) / price # دخول بـ 10% من المحفظة لكل صفقة
+                    
                     if price > ema:
-                        yield f"📈 شراء {symbol} عند {price}"
-                        self.exchange.create_market_buy_order(symbol, 0.001) # تأكد من حجم اللوت
+                        yield f"📈 إشارة صعود {symbol}.. تنفيذ Long"
+                        self.exchange.create_market_buy_order(symbol, order_size)
                     elif price < ema:
-                        yield f"📉 بيع {symbol} عند {price}"
-                        self.exchange.create_market_sell_order(symbol, 0.001)
+                        yield f"📉 إشارة هبوط {symbol}.. تنفيذ Short"
+                        self.exchange.create_market_sell_order(symbol, order_size)
                 except Exception as e:
-                    yield f"⚠️ خطأ: {str(e)}"
-                time.sleep(2)
-            time.sleep(10)
+                    yield f"⚠️ تنبيه {symbol}: {str(e)}"
+                
+            time.sleep(30) # فحص كل 30 ثانية
 
-# --- 2. واجهة المستخدم (Streamlit UI) ---
-st.set_page_config(page_title="بوت التداول الآلي", page_icon="🤖")
+# --- الواجهة الرسومية ---
+st.title("🛡️ بوت التداول الآلي (دورة 12 ساعة / هدف 10%)")
 
-st.title("🤖 نظام التداول الذكي")
+with st.expander("🔐 إعدادات الوصول للمحفظة", expanded=True):
+    col_a, col_b, col_c = st.columns(3)
+    api = col_a.text_input("API Key", type="password")
+    sec = col_b.text_input("Secret Key", type="password")
+    ex = col_c.selectbox("المنصة", ["binance", "bybit"])
 
-# جلب المفاتيح من Secrets
-try:
-    API_KEY = st.secrets["api_key"]
-    SECRET_KEY = st.secrets["secret_key"]
-    bot = TradingBot(API_KEY, SECRET_KEY)
-except:
-    st.error("يرجى ضبط API Key في إعدادات Secrets!")
-    st.stop()
-
-# عرض الرصيد العلوي
-balance = bot.get_balance()
-st.metric("رصيد المحفظة (USDT)", f"{balance:.2f} $")
-
-# حالة البوت
-if 'running' not in st.session_state:
-    st.session_state.running = False
-
-col1, col2 = st.columns(2)
-
-with col1:
-    if st.button("▶️ تشغيل البوت", type="primary", use_container_width=True):
+if api and sec:
+    bot = TradingBot(api, sec, ex)
+    
+    if st.button("🚀 ابدأ دورة التداول (12 ساعة)", type="primary", use_container_width=True):
         st.session_state.running = True
-
-with col2:
-    if st.button("🛑 إيقاف وجني الأرباح", type="secondary", use_container_width=True):
-        st.session_state.running = False
+        for msg in bot.run_session():
+            st.write(msg)
+    
+    if st.button("🛑 إيقاف طارئ وإغلاق الصفقات", use_container_width=True):
         bot.is_running = False
-        st.warning("جاري إغلاق كل شيء...")
-
-# تشغيل البوت وعرض النتائج
-if st.session_state.running:
-    st.info("البوت نشط الآن...")
-    log_area = st.empty()
-    for message in bot.run_logic():
-        with log_area.container():
-            st.write(message)
-        if not st.session_state.running:
-            break
+        bot.close_all_positions(['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT'])
+        st.error("تم إيقاف البوت وتصفية المحفظة فوراً.")
 else:
-    st.write("البوت في وضع الاستعداد.")
+    st.warning("يرجى إدخال مفاتيح الـ API للاتصال بمحفظتك.")
     
