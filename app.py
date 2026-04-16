@@ -26,8 +26,7 @@ if 'logged_in' not in st.session_state:
     st.title("🔐 Secure Login")
     user = st.text_input("Username")
     passw = st.text_input("Password", type="password")
-    if st.button("Enter System"):
-        if user == "admin" and passw == "123":
+    if st.button("Enter System"   
             st.session_state['logged_in'] = True
             st.rerun()
         else: st.error("Invalid Credentials")
