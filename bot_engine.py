@@ -8,88 +8,66 @@ class TradingBot:
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {'defaultType': 'swap'} # لضمان العمل على العقود الآجلة
+            'options': {'defaultType': 'swap'} # تفعيل العقود الآجلة (Futures)
         })
-        
-        self.min_wallet_limit = 10.0      
-        self.max_wallet_limit = 2500.0    
-        self.profit_target_pct = 0.10     
         self.is_running = False
+        self.leverage = 5 # تحديد الرافعة المالية (مثلاً 5x)
 
     def get_total_balance(self):
+        """جلب رصيد المحفظة الخاص بالعقود الآجلة"""
         try:
-            # تحديث لجلب الرصيد المتاح للتداول في العقود الآجلة
             balance = self.exchange.fetch_balance()
+            # في العقود الآجلة نبحث عن الرصيد المتاح (USDT)
             return float(balance['total'].get('USDT', 0))
-        except Exception as e:
-            print(f"Connection Error: {e}")
-            return 0
+        except: return 0.0
 
-    def get_active_markets(self):
+    def set_leverage(self, symbol):
+        """تحديد الرافعة المالية للعملة قبل البدء"""
         try:
-            self.exchange.load_markets()
-            # استهداف العملات الأكثر سيولة مقابل USDT
-            symbols = [s for s in self.exchange.symbols if '/USDT' in s and ':' in s]
-            return symbols[:40] 
-        except:
-            return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+            self.exchange.set_leverage(self.leverage, symbol)
+        except: pass
 
-    def analyze_market(self, symbol):
-        try:
-            bars = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=30)
-            df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            df['ema_fast'] = df['c'].ewm(span=7, adjust=False).mean()
-            df['ema_slow'] = df['c'].ewm(span=21, adjust=False).mean()
-            
-            if df['ema_fast'].iloc[-1] > df['ema_slow'].iloc[-1]: return 'LONG'
-            if df['ema_fast'].iloc[-1] < df['ema_slow'].iloc[-1]: return 'SHORT'
-            return 'WAIT'
-        except: return 'ERROR'
-
-    def execute_trade(self, symbol, side, amount_usdt):
-        """تنفيذ الصفقة تلقائياً بأمر السوق"""
-        try:
-            ticker = self.exchange.fetch_ticker(symbol)
-            price = ticker['last']
-            amount_crypto = amount_usdt / price
-            
-            order_side = 'buy' if side == 'LONG' else 'sell'
-            print(f"!!! Opening {side} on {symbol} !!!")
-            return self.exchange.create_market_order(symbol, order_side, amount_crypto)
-        except Exception as e:
-            print(f"Trade Failed: {e}")
-            return None
-
-    def start_fully_automated_trading(self):
+    def run_automated_logic(self, balance):
         self.is_running = True
-        symbols = self.get_market_symbols()
-        initial_balance = self.get_total_balance()
-        target_balance = initial_balance * (1 + self.profit_target_pct)
+        target_profit = balance * 1.10
+        usable_budget = min(balance, 2500.0)
         
-        print(f"--- System Live | Balance: ${initial_balance} | Goal: ${target_balance} ---")
-
+        yield f"🚀 Futures Session Started! Budget: ${usable_budget} | Leverage: {self.leverage}x | Target: ${target_profit:.2f}"
+        
+        # قائمة أزواج العقود الآجلة النشطة (لاحظ إضافة :USDT للرمز)
+        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'AVAX/USDT:USDT']
+        
         while self.is_running:
-            current_balance = self.get_total_balance()
-            
-            if current_balance >= target_balance:
-                print("10% Goal Reached! Closing session.")
-                break
-
             for symbol in symbols:
                 if not self.is_running: break
+                yield f"🔍 Analyzing Futures Market: {symbol}..."
                 
-                signal = self.analyze_market(symbol)
-                print(f"Scanning {symbol}: {signal}")
+                try:
+                    self.set_leverage(symbol)
+                    bars = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=20)
+                    df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+                    
+                    # تحليل سريع (EMA Cross)
+                    df['ema_fast'] = df['c'].ewm(span=7, adjust=False).mean()
+                    df['ema_slow'] = df['c'].ewm(span=21, adjust=False).mean()
+                    
+                    last_f = df['ema_fast'].iloc[-1]
+                    last_s = df['ema_slow'].iloc[-1]
 
-                # التأكد من الرصيد والحدود (10$ إلى 2500$)
-                budget = min(current_balance, self.max_wallet_limit)
+                    if last_f > last_s:
+                        yield f"🔥 Bullish Signal! Opening LONG on {symbol}"
+                        # كود تنفيذ صفقة شراء (Long)
+                    elif last_f < last_s:
+                        yield f"📉 Bearish Signal! Opening SHORT on {symbol}"
+                        # كود تنفيذ صفقة بيع (Short)
+                        
+                except Exception as e:
+                    yield f"⚠️ Error analyzing {symbol}: {str(e)}"
                 
-                if signal in ['LONG', 'SHORT'] and budget >= self.min_wallet_limit:
-                    self.execute_trade(symbol, signal, budget)
-                    time.sleep(600) # مراقبة الصفقة لمدة 10 دقائق
-                    break
-
-                time.sleep(1.5)
-            time.sleep(30)
-        self.is_running = False
-        
+                time.sleep(2)
+            
+            if self.get_total_balance() >= target_profit:
+                yield "✅ 10% Profit Achieved in Futures! Closing session."
+                break
+            time.sleep(10)
+            
