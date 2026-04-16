@@ -1,0 +1,22 @@
+{
+    "app_settings": {
+        "is_activated": false,
+        "activation_expiry": "",
+        "trial_start_date": ""
+    },
+    "exchange_keys": {
+        "api_key": "",
+        "secret_key": "",
+        "selected_exchange": "MEXC"
+    },
+    "trading_stats": {
+        "total_profit": 0.0,
+        "daily_target": 50.0,
+        "max_limit": 2500.0,
+        "min_trade": 20.0
+    },
+    "admin_control": {
+        "pending_requests": [],
+        "generated_codes": []
+    }
+}
