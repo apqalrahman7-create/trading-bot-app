@@ -1,18 +1,14 @@
 import streamlit as st
-import json
-import os
-import random
+import json, os, random
 from datetime import datetime, timedelta
-from bot_engine import TradingBot  # استدعاء المحرك الحقيقي
 
-# 1. Database Management
+# --- 1. حماية البيانات وقاعدة البيانات ---
 def load_db():
-    default = {"activated": False, "expiry": "", "api": {"key": "", "secret": "", "exchange": "binance"}, "codes": [], "first_run": ""}
-    if os.path.exists('database.json'):
-        try:
-            with open('database.json', 'r') as f: return json.load(f)
+    default = {"activated": False, "api": {"key": "", "secret": ""}, "codes": [], "first_run": "", "messages": []}
+    if not os.path.exists('database.json'): return default
+    with open('database.json', 'r') as f:
+        try: return json.load(f)
         except: return default
-    return default
 
 def save_db(data):
     with open('database.json', 'w') as f: json.dump(data, f)
@@ -20,7 +16,20 @@ def save_db(data):
 st.set_page_config(page_title="AI Trader Pro", layout="wide")
 db = load_db()
 
-# Tracking 24h Trial
+# --- 2. شاشة تسجيل الدخول (إجبارية) ---
+if 'logged_in' not in st.session_state:
+    st.title("🔐 AI Trader Login")
+    user = st.text_input("Username")
+    passw = st.text_input("Password", type="password")
+    if st.button("Sign In"):
+        if user == "admin" and passw == "123": # يمكنك تغييرها
+            st.session_state['logged_in'] = True
+            st.rerun()
+        else:
+            st.error("Invalid Credentials")
+    st.stop()
+
+# --- 3. نظام الوقت (24 ساعة تجريبية) ---
 if not db.get("first_run"):
     db["first_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_db(db)
@@ -28,84 +37,86 @@ if not db.get("first_run"):
 trial_start = datetime.strptime(db["first_run"], "%Y-%m-%d %H:%M:%S")
 is_trial_over = datetime.now() - trial_start > timedelta(hours=24)
 
-# 2. Navigation
-menu = st.sidebar.radio("Navigation", ["Dashboard", "API Settings", "Support & Admin"])
+# --- 4. القائمة والواجهة ---
+menu = st.sidebar.radio("Navigation", ["Dashboard", "API Connection", "Support & Admin"])
 
-# --- SCREEN 1: DASHBOARD ---
+# --- الشاشة الرئيسية ---
 if menu == "Dashboard":
-    st.title("🚀 Real-Time Trading Terminal")
+    st.title("🚀 Trading Dashboard")
     
-    # FETCH REAL BALANCE FROM EXCHANGE
-    real_balance = 0.0
+    # جلب الرصيد الحقيقي (مع حماية من الفراغ)
+    balance = "0.00"
     if db['api'].get('key') and db['api'].get('secret'):
         try:
-            # الربط الحقيقي لجلب الرصيد
-            bot = TradingBot(
-                db['api'].get('exchange', 'binance').lower(), 
-                db['api']['key'], 
-                db['api']['secret']
-            )
-            real_balance = bot.get_wallet_balance()
-            st.success(f"Connected to {db['api']['exchange'].upper()} Successfully")
-        except Exception as e:
-            st.error(f"Connection Error: Please check if your API keys are correct.")
-
-    # Metrics Display
+            from bot_engine import TradingBot
+            bot = TradingBot(db['api'].get('exchange', 'binance').lower(), db['api']['key'], db['api']['secret'])
+            balance = f"{bot.get_wallet_balance():,.2f}"
+        except: balance = "Connection Error"
+    
     col1, col2, col3 = st.columns(3)
-    col1.metric("Real Wallet Balance", f"${real_balance:,.2f}")
-    col2.metric("Bot Trading Limit", "$2500.00")
-    col3.metric("Target Profit", "10%")
+    col1.metric("Live Balance", f"${balance}")
+    col2.metric("Bot Limit", "$2500")
+    col3.metric("Daily Target", "10%")
 
     st.divider()
 
-    # Bot Controls & Trial Logic
     if is_trial_over and not db['activated']:
-        st.error("⚠️ 24-Hour Trial Expired! Contact Admin for Activation Code.")
-        code_input = st.text_input("Enter 6-Digit Activation Code:")
-        if st.button("Activate 60 Days Access"):
-            if code_input in db.get('codes', []):
+        st.error("⚠️ Trial Expired! Contact Support for Activation Code.")
+        code_in = st.text_input("Enter 6-Digit Code")
+        if st.button("Verify Code"):
+            if code_in in db.get('codes', []):
                 db['activated'] = True
-                db['expiry'] = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
                 save_db(db)
-                st.success("System Activated for 60 Days!")
+                st.success("Activated for 60 Days!")
                 st.rerun()
-            else:
-                st.error("Invalid Code.")
     else:
-        if not db['api'].get('key'):
-            st.warning("Please link your API keys in 'API Settings' to show balance and start trading.")
+        st.subheader("Bot Control")
+        if st.button("▶️ START AUTO-TRADE (12H)", use_container_width=True):
+            if not db['api'].get('key'): st.warning("Please link API first!")
+            else: st.success("Bot is running in background...")
+
+# --- شاشة الربط (تمنع الربط الوهمي) ---
+elif menu == "API Connection":
+    st.title("⚙️ Exchange Settings")
+    ex = st.selectbox("Select Exchange", ["Binance", "MEXC"])
+    k = st.text_input("API Key")
+    s = st.text_input("Secret Key", type="password")
+    if st.button("Verify & Link"):
+        if not k or not s:
+            st.error("❌ Cannot link empty keys!")
         else:
-            c1, c2 = st.columns(2)
-            if c1.button("▶️ START AUTO-TRADE (12H)", use_container_width=True):
-                st.info("Bot is analyzing markets using $2500 limit. 10% Profit target active.")
-            if c2.button("⏹️ EMERGENCY STOP", use_container_width=True):
-                st.warning("Halt signal sent. All funds returned to USDT.")
+            with st.spinner("Checking..."):
+                try:
+                    from bot_engine import TradingBot
+                    test = TradingBot(ex.lower(), k, s)
+                    test.get_wallet_balance() # اختبار حقيقي
+                    db['api'] = {"key": k, "secret": s, "exchange": ex}
+                    save_db(db)
+                    st.success(f"✅ Linked successfully to {ex}")
+                except:
+                    st.error("❌ Failed: Invalid Keys or Permission Error")
 
-# --- SCREEN 2: API SETTINGS ---
-elif menu == "API Settings":
-    st.title("⚙️ Exchange Connection")
-    ex = st.selectbox("Select Platform", ["Binance", "MEXC"])
-    api = st.text_input("API Key", value=db['api'].get('key', ''))
-    secret = st.text_input("Secret Key", type="password", value=db['api'].get('secret', ''))
-    if st.button("Save & Test Connection"):
-        db['api'] = {'key': api, 'secret': secret, 'exchange': ex}
-        save_db(db)
-        st.success(f"Keys saved for {ex}! Go to Dashboard to see your balance.")
-
-# --- SCREEN 3: SUPPORT & ADMIN ---
+# --- شاشة الدعم والدردشة ولوحة المشرف ---
 elif menu == "Support & Admin":
-    st.title("🎧 Support & Management")
-    st.subheader("Customer Support")
-    if st.button("Send Request to Admin"):
-        st.info("Request sent. Waiting for Admin approval.")
+    st.title("🎧 Support & Chat")
+    
+    # 1. الدردشة (Chat)
+    st.subheader("💬 Support Chat")
+    chat_msg = st.text_input("Type your message here...")
+    if st.button("Send Message"):
+        db['messages'].append(f"User: {chat_msg}")
+        save_db(db)
+    
+    for m in db['messages'][-5:]: st.write(m) # عرض آخر 5 رسائل
 
     st.divider()
-    st.subheader("👨‍💻 Admin Panel (Auto-Responder)")
-    if st.button("✅ Approve & Generate Activation Code"):
-        new_code = str(random.randint(100000, 999999))
-        if 'codes' not in db: db['codes'] = []
-        db['codes'].append(new_code)
+    
+    # 2. لوحة المشرف (إصدار الرموز)
+    st.subheader("👨‍💻 Admin Panel")
+    if st.button("✅ Approve & Generate 6-Digit Code"):
+        new_c = str(random.randint(100000, 999999))
+        db['codes'].append(new_c)
         save_db(db)
-        st.code(new_code)
-        st.success("6-Digit Code generated. Provide this to the user for 60-day access.")
-                
+        st.success(f"New Code Generated: {new_c}")
+        st.info("Give this code to the user for 60-day access.")
+    
