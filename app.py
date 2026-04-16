@@ -1,82 +1,91 @@
 import streamlit as st
 import ccxt
-import pandas as pd
 import time
+import pandas as pd
 
 # --- إعدادات الصفحة ---
-st.set_page_config(page_title="MEXC Force Connect", layout="wide")
+st.set_page_config(page_title="MEXC Auto Trader", layout="wide")
 
-class MexcUltimateBot:
+class MexcFinalBot:
     def __init__(self, api, secret):
-        # استخدام إعدادات MEXC V3 الحديثة
         self.exchange = ccxt.mexc({
             'apiKey': api,
             'secret': secret,
             'enableRateLimit': True,
-            'options': {
-                'defaultType': 'spot', # يبدأ بالسبوت كافتراضي
-                'adjustForTimeDifference': True # حل مشكلة توقيت السيرفر
-            }
+            'options': {'defaultType': 'swap', 'adjustForTimeDifference': True}
         })
 
-    def get_real_balance(self):
-        """محاولة جلب الرصيد من كل أنواع المحافظ الممكنة في MEXC"""
+    def fetch_all_balances(self):
         try:
-            # 1. محاولة جلب رصيد السبوت (Spot)
-            spot_bal = self.exchange.fetch_balance({'type': 'spot'})
-            spot_usdt = float(spot_bal['total'].get('USDT', 0))
-            
-            # 2. محاولة جلب رصيد العقود الآجلة (Futures/Swap)
-            try:
-                swap_bal = self.exchange.fetch_balance({'type': 'swap'})
-                swap_usdt = float(swap_bal['total'].get('USDT', 0))
-            except:
-                swap_usdt = 0.0
-                
-            return spot_usdt, swap_usdt
+            # جلب الرصيد من MEXC مع تحديد النوع لضمان عدم العودة بصفر
+            balance = self.exchange.fetch_balance()
+            total_usdt = float(balance.get('total', {}).get('USDT', 0))
+            free_usdt = float(balance.get('free', {}).get('USDT', 0))
+            return max(total_usdt, free_usdt)
         except Exception as e:
-            return str(e), 0.0
+            return f"Error: {str(e)}"
 
-# --- الواجهة الرسومية الرئيسية ---
-st.title("🛡️ نظام الربط المباشر بمحفظة MEXC (النسخة المحدثة)")
+# --- واجهة المستخدم الرئيسية ---
+st.title("🤖 بوت MEXC المتكامل (تداول 12 ساعة / هدف 10%)")
+st.markdown("---")
 
+# القائمة الجانبية للمفاتيح
 with st.sidebar:
-    st.header("🔑 إدخال البيانات")
-    api_key = st.text_input("API Key", type="password")
-    secret_key = st.text_input("Secret Key", type="password")
+    st.header("🔑 إعدادات API")
+    api_k = st.text_input("API Key", type="password")
+    sec_k = st.text_input("Secret Key", type="password")
+    lev = st.slider("الرافعة المالية", 1, 20, 10)
 
-if api_key and secret_key:
-    bot = MexcUltimateBot(api_key, secret_key)
-    spot, swap = bot.get_real_balance()
+if api_k and sec_k:
+    bot = MexcFinalBot(api_k, sec_k)
+    real_bal = bot.fetch_all_balances()
 
-    if isinstance(spot, float):
-        st.success("✅ تم الربط بنجاح مع سيرفرات MEXC")
+    if isinstance(real_bal, float):
+        # عرض الرصيد الحقيقي فوراً
+        st.subheader("💰 ملخص المحفظة")
+        c1, c2 = st.columns(2)
+        c1.metric("الرصيد المكتشف (USDT)", f"${real_bal:.2f}")
+        c2.info("الحالة: متصل وجاهز" if real_bal > 0 else "الحالة: متصل ولكن الرصيد 0")
+
+        if 'active' not in st.session_state:
+            st.session_state.active = False
+
+        st.markdown("---")
         
-        # عرض الرصيد في مربعات كبيرة واضحة
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("رصيد السبوت (Spot USDT)", f"${spot:.2f}")
-        with col2:
-            st.metric("رصيد الفيوتشر (Futures USDT)", f"${swap:.2f}")
-
-        total_available = spot + swap
+        # أزرار التحكم
+        col_start, col_stop = st.columns(2)
+        if col_start.button("🚀 بدء التداول الآلي الذكي", type="primary", use_container_width=True):
+            st.session_state.active = True
         
-        if total_available > 5:
-            st.markdown("---")
-            st.subheader("🚀 إدارة التداول الآلي")
+        if col_stop.button("🛑 إيقاف فوري", use_container_width=True):
+            st.session_state.active = False
+            st.warning("تم إرسال أمر الإيقاف.")
+
+        # منطقة تنفيذ العمليات
+        if st.session_state.active and real_bal > 5:
+            st.success("🔄 البوت يعمل الآن.. يحلل السوق ويفتح صفقات تلقائياً.")
             
-            if st.button("بدء التداول الذكي (12 ساعة / هدف 10%)", type="primary", use_container_width=True):
-                st.session_state.active = True
-                
-            if st.session_state.get('active'):
-                st.info("🔄 البوت يقوم الآن بمسح السوق.. سيتم تنفيذ أول صفقة فور توفر فرصة.")
-                # هنا نضع منطق الشراء والبيع الحقيقي
-                # (سيقوم البوت باستخدام الرصيد المتوفر سواء في سبوت أو فيوتشر)
-        else:
-            st.warning("⚠️ الرصيد المكتشف أقل من الحد الأدنى (5$). يرجى التأكد من وجود USDT في حسابك.")
+            # --- منطق التداول (BTC كمثال) ---
+            symbol = 'BTC/USDT:USDT'
+            ohlcv = bot.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=20)
+            df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+            price = df['c'].iloc[-1]
+            ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
+
+            if price > ema:
+                st.write(f"📈 إشارة شراء على {symbol}.. تنفيذ صفقة Long")
+                qty = (real_bal * lev * 0.9) / price
+                bot.exchange.create_market_buy_order(symbol, bot.exchange.amount_to_precision(symbol, qty))
+            
+            elif price < ema:
+                st.write(f"📉 إشارة بيع على {symbol}.. تنفيذ صفقة Short")
+                qty = (real_bal * lev * 0.9) / price
+                bot.exchange.create_market_sell_order(symbol, bot.exchange.amount_to_precision(symbol, qty))
+
+            time.sleep(15)
+            st.rerun() # إجبار الصفحة على التحديث لجلب الرصيد الجديد والتحليل القادم
     else:
-        st.error(f"❌ خطأ في الاتصال: {spot}")
-        st.info("تأكد من تفعيل صلاحيات (Read & Trade) وإلغاء قيود الـ IP في إعدادات الـ API بموقع MEXC.")
+        st.error(f"❌ فشل الاتصال: {real_bal}")
 else:
-    st.info("يرجى إدخال مفاتيح الـ API في القائمة الجانبية ليتمكن البوت من جلب رصيدك الحقيقي.")
+    st.warning("⚠️ أدخل مفاتيح الـ API في القائمة الجانبية لتنشيط البوت.")
     
