@@ -1,4 +1,4 @@
-pandas_ta
-ccxt
-pandas
 streamlit
+pandas
+ccxt
+pandas_ta
