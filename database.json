@@ -1,9 +1,12 @@
 {
     "activated": false,
-    "expiry": "",
     "api": {
         "key": "",
-        "secret": ""
+        "secret": "",
+        "exchange": "binance"
     },
-    "codes": []
+    "codes": [],
+    "first_run": "",
+    "messages": []
 }
+
