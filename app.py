@@ -3,87 +3,96 @@ import json
 import os
 import random
 from datetime import datetime, timedelta
-from bot_engine import TradingBot
 
-# 1. Setup & Data Persistence
+# --- 1. إعدادات وحفظ البيانات ---
 def load_db():
+    default = {"activated": False, "expiry": "", "api": {"key": "", "secret": ""}, "codes": [], "first_run": ""}
     if os.path.exists('database.json'):
-        with open('database.json', 'r') as f: return json.load(f)
-    return {"activated": False, "expiry": "", "api": {}, "codes": []}
+        try:
+            with open('database.json', 'r') as f: return json.load(f)
+        except: return default
+    return default
 
 def save_db(data):
     with open('database.json', 'w') as f: json.dump(data, f)
 
-st.set_page_config(page_title="AI Trading System", layout="wide")
+st.set_page_config(page_title="AI Trader Pro", layout="wide")
 db = load_db()
 
-# 2. Session Management
-if 'start_time' not in st.session_state:
-    st.session_state['start_time'] = datetime.now()
-trial_over = datetime.now() - st.session_state['start_time'] > timedelta(hours=24)
+# تسجيل وقت أول تشغيل للتطبيق (لبدء الـ 24 ساعة)
+if not db.get("first_run"):
+    db["first_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_db(db)
 
-# --- LOGIN SCREEN ---
-if 'auth' not in st.session_state:
-    st.title("🔐 System Login")
-    if st.button("Enter App"):
-        st.session_state['auth'] = True
-        st.rerun()
-else:
-    # --- MAIN NAVIGATION ---
-    menu = st.sidebar.radio("Menu", ["Dashboard", "Settings (API)", "Customer Service"])
+trial_start = datetime.strptime(db["first_run"], "%Y-%m-%d %H:%M:%S")
+is_trial_over = datetime.now() - trial_start > timedelta(hours=24)
 
-    # SCREEN 1: SETTINGS (API CONNECTION)
-    if menu == "Settings (API)":
-        st.title("⚙️ Exchange Connection")
-        st.info("Link your Binance or MEXC keys here.")
-        api_key = st.text_input("API Key", value=db['api'].get('key', ''))
-        secret_key = st.text_input("Secret Key", type="password", value=db['api'].get('secret', ''))
-        if st.button("Save & Link"):
-            db['api'] = {'key': api_key, 'secret': secret_key}
-            save_db(db)
-            st.success("Platform Linked!")
+# --- 2. الواجهة الرئيسية ---
+menu = st.sidebar.radio("Navigation", ["Dashboard", "API Settings", "Support & Admin"])
 
-    # SCREEN 2: DASHBOARD (BOT CONTROL)
-    elif menu == "Dashboard":
-        st.title("🚀 Trading Dashboard")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Wallet Balance", "$10,000") # Simulated
-        col2.metric("Today's Profit", "$50")
-        col3.metric("Trade Limit", "$2500")
+if menu == "Dashboard":
+    st.title("🚀 Automated Trading Terminal")
+    
+    # عرض الرصيد والحدود
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Bot Trading Limit", "$2500")
+    col2.metric("Target Profit", "10%")
+    col3.metric("Trade Status", "Active" if not is_trial_over or db['activated'] else "Locked")
 
-        st.divider()
+    st.divider()
 
-        # 24h Trial & Activation Logic
-        if trial_over and not db['activated']:
-            st.error("⚠️ 24h Trial Ended. Enter Activation Code.")
-            code_input = st.text_input("Enter 6-Digit Code")
-            if st.button("Activate"):
-                if code_input in db['codes']:
-                    db['activated'] = True
-                    db['expiry'] = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
-                    save_db(db)
-                    st.success("Activated for 60 Days!")
-                    st.rerun()
+    # منطق القفل بعد 24 ساعة
+    if is_trial_over and not db['activated']:
+        st.error("⚠️ 24-Hour Trial Period Ended! Please contact the Admin for an activation code.")
+        st.info("The bot is currently locked. Enter the 6-digit code provided by support.")
+        code_input = st.text_input("Enter Activation Code:", placeholder="123456")
+        if st.button("Activate 60-Day Access"):
+            if code_input in db.get('codes', []):
+                db['activated'] = True
+                db['expiry'] = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+                save_db(db)
+                st.success("✅ System Activated! You now have full access for 60 days.")
+                st.rerun()
+            else:
+                st.error("Invalid Code. Please request approval from the Admin.")
+    else:
+        # أزرار التشغيل (تظهر فقط في أول 24 ساعة أو بعد التفعيل)
+        if not db['api'].get('key'):
+            st.warning("Please link your API keys in 'API Settings' to enable trading.")
         else:
             c1, c2 = st.columns(2)
-            if c1.button("▶️ START BOT (12H)", use_container_width=True):
-                st.success("Bot is analyzing market... Target: 10% Profit.")
-            if c2.button("⏹️ STOP BOT", use_container_width=True):
-                st.warning("Stopping... Returning capital and profits to wallet.")
+            if c1.button("▶️ START AUTO-TRADING (12H)", use_container_width=True):
+                st.success("Bot is running in the background. Analyzing market...")
+            if c2.button("⏹️ EMERGENCY STOP", use_container_width=True):
+                st.warning("Bot stopped. All funds are back in USDT.")
 
-    # SCREEN 3: CUSTOMER SERVICE (ADMIN)
-    elif menu == "Customer Service":
-        st.title("🎧 Support & Admin")
-        st.subheader("User Request")
-        if st.button("Request Activation Code"):
-            st.info("Request sent to Admin.")
+elif menu == "API Settings":
+    st.title("⚙️ Exchange Connection")
+    ex = st.selectbox("Platform", ["Binance", "MEXC"])
+    api = st.text_input("API Key", value=db['api'].get('key', ''))
+    secret = st.text_input("Secret Key", type="password", value=db['api'].get('secret', ''))
+    if st.button("Save & Link"):
+        db['api'] = {'key': api, 'secret': secret, 'exchange': ex}
+        save_db(db)
+        st.success(f"Connected to {ex} successfully!")
 
-        st.divider()
-        st.subheader("👨‍💻 Admin Panel (Auto-Responder)")
-        if st.button("Approve & Send 6-Digit Code"):
-            new_code = str(random.randint(100000, 999999))
-            db['codes'].append(new_code)
-            save_db(db)
-            st.code(new_code)
-            st.success("Auto-Responder: Activation code generated for 60 days.")
-                
+elif menu == "Support & Admin":
+    st.title("🎧 Support & Admin Center")
+    
+    # قسم المستخدم لطلب الرمز
+    st.subheader("Request Activation")
+    if st.button("Click to Request Approval"):
+        st.info("Request sent! The Admin will review and provide your 6-digit code.")
+
+    st.divider()
+    
+    # قسم المشرف (أنت)
+    st.subheader("👨‍💻 Admin Control Panel")
+    st.write("Grant access to the user by generating a secure code.")
+    if st.button("✅ Approve & Send Code (Auto-Responder)"):
+        new_code = str(random.randint(100000, 999999))
+        if 'codes' not in db: db['codes'] = []
+        db['codes'].append(new_code)
+        save_db(db)
+        st.code(new_code)
+        st.success("The Auto-Responder has generated a 60-day activation code.")
