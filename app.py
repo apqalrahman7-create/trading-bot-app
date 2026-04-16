@@ -3,7 +3,18 @@ import json, os, random
 from datetime import datetime, timedelta
 
 # --- 1. حماية البيانات وقاعدة البيانات ---
-def load_db():
+def def load_db():
+    default = {"activated": False, "api": {"key": "", "secret": "", "exchange": "binance"}, "codes": [], "first_run": "", "messages": []}
+    if not os.path.exists('database.json'): return default
+    with open('database.json', 'r') as f:
+        try: 
+            data = json.load(f)
+            # إضافة الأقسام الناقصة تلقائياً لمنع الأخطاء
+            for key in default:
+                if key not in data:
+                    data[key] = default[key]
+            return data
+        except: return defaul
     default = {"activated": False, "api": {"key": "", "secret": ""}, "codes": [], "first_run": "", "messages": []}
     if not os.path.exists('database.json'): return default
     with open('database.json', 'r') as f:
