@@ -2,108 +2,106 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import time
+from datetime import datetime, timedelta
 
-# --- إعدادات الصفحة ---
-st.set_page_config(page_title="MEXC AI Trader", layout="wide")
+st.set_page_config(page_title="بوت الـ 12 ساعة التراكمي", layout="wide")
 
-class MEXCProBot:
+class FinalTurboBot:
     def __init__(self, api, secret):
         self.exchange = ccxt.mexc({
-            'apiKey': api,
-            'secret': secret,
+            'apiKey': api, 'secret': secret,
             'enableRateLimit': True,
-            'options': {'defaultType': 'swap'} # تداول العقود الآجلة
+            'options': {'defaultType': 'swap'}
         })
 
     def get_market_data(self, symbol):
         try:
-            # جلب البيانات والتحليل
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=30)
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1m', limit=30)
             df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            df['ema'] = df['c'].ewm(span=10, adjust=False).mean()
-            # حساب RSI بسيط
-            delta = df['c'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            df['rsi'] = 100 - (100 / (1 + (gain / loss)))
-            return df.iloc[-1]
-        except: return None
+            ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
+            return df['c'].iloc[-1], ema
+        except: return 0, 0
 
-    def get_balance(self):
+    def close_all(self, symbol):
         try:
-            bal = self.exchange.fetch_balance()
-            return float(bal['total'].get('USDT', 0))
-        except: return 0.0
+            pos = self.exchange.fetch_positions([symbol])
+            for p in pos:
+                size = float(p['contracts'])
+                if size != 0:
+                    side = 'sell' if size > 0 else 'buy'
+                    self.exchange.create_order(symbol, 'market', side, abs(size), params={'reduceOnly': True})
+            return True
+        except: return False
 
-    def safe_trade(self, symbol, side, usdt_amount, leverage):
-        try:
-            # جلب السعر الحالي ودقة العملة لمنع خطأ InvalidOrder
-            ticker = self.exchange.fetch_ticker(symbol)
-            price = ticker['last']
-            
-            # حساب الكمية مع خصم بسيط للرسوم (90%)
-            raw_qty = (usdt_amount * leverage * 0.90) / price
-            
-            # تصحيح الكمية حسب قوانين MEXC
-            precise_qty = float(self.exchange.amount_to_precision(symbol, raw_qty))
-            
-            if side == 'buy':
-                return self.exchange.create_market_buy_order(symbol, precise_qty)
-            else:
-                return self.exchange.create_market_sell_order(symbol, precise_qty)
-        except Exception as e:
-            return f"Error: {str(e)}"
-
-# --- الواجهة الرئيسية ---
-st.title("🧠 نظام MEXC للتداول الذكي (عقود آجلة)")
+# --- الواجهة ---
+st.title("🛡️ بوت تداول MEXC (دورة 12 ساعة)")
 
 with st.sidebar:
-    st.header("🔐 إعدادات الحساب")
     api_k = st.text_input("API Key", type="password")
     sec_k = st.text_input("Secret Key", type="password")
-    st.divider()
-    risk = st.slider("المخاطرة لكل صفقة %", 5, 50, 10)
-    lev = st.number_input("الرافعة المالية", 1, 50, 5)
+    lev = st.slider("الرافعة المالية", 1, 25, 10)
 
 if api_k and sec_k:
-    bot = MEXCProBot(api_k, sec_k)
-    current_bal = bot.get_balance()
+    bot = FinalTurboBot(api_k, sec_k)
     
-    # عرض الرصيد بشكل واضح لمنع خطأ ZeroDivision
-    st.metric("الرصيد المتاح (USDT)", f"${current_bal:.2f}")
+    # تهيئة متغيرات الجلسة
+    if 'start_time' not in st.session_state: st.session_state.start_time = None
+    if 'initial_bal' not in st.session_state: st.session_state.initial_bal = bot.exchange.fetch_balance()['total'].get('USDT', 0)
 
-    if 'running' not in st.session_state: st.session_state.running = False
+    # عرض لوحة الإحصائيات
+    cur_bal = bot.exchange.fetch_balance()['total'].get('USDT', 0)
+    target = st.session_state.initial_bal * 1.10
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("رصيد البداية", f"${st.session_state.initial_bal:.2f}")
+    c2.metric("الرصيد المباشر", f"${cur_bal:.2f}", f"{((cur_bal/st.session_state.initial_bal)-1)*100:.2f}%")
+    
+    if st.session_state.start_time:
+        remaining = (st.session_state.start_time + timedelta(hours=12)) - datetime.now()
+        c3.metric("الوقت المتبقي", str(remaining).split('.')[0])
+    else:
+        c3.metric("الوقت المتبقي", "12:00:00")
 
-    col1, col2 = st.columns(2)
-    if col1.button("🚀 تشغيل البوت الذكي", use_container_width=True, type="primary"):
-        st.session_state.running = True
-    if col2.button("🛑 إيقاف فوري", use_container_width=True):
-        st.session_state.running = False
+    if st.button("🚀 إطلاق دورة الـ 12 ساعة", type="primary", use_container_width=True):
+        st.session_state.start_time = datetime.now()
+        st.session_state.active = True
 
-    if st.session_state.running and current_bal > 5:
-        st.info("🔄 النظام يحلل السوق ويوزع رأس المال حالياً...")
-        
-        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT']
-        for sym in symbols:
-            data = bot.get_market_data(sym)
-            if data is not None:
-                price, ema, rsi = data['c'], data['ema'], data['rsi']
-                
-                # منطق الدخول الذكي
-                if price > ema and rsi < 70:
-                    st.write(f"📈 فرصة Long في {sym}")
-                    res = bot.safe_trade(sym, 'buy', (current_bal * risk/100), lev)
-                    st.success(f"تم التنفيذ: {res}")
-                
-                elif price < ema and rsi > 30:
-                    st.write(f"📉 فرصة Short في {sym}")
-                    res = bot.safe_trade(sym, 'sell', (current_bal * risk/100), lev)
-                    st.warning(f"تم التنفيذ: {res}")
-        
+    if st.session_state.get('active'):
+        # 1. فحص انتهاء الوقت
+        if datetime.now() >= st.session_state.start_time + timedelta(hours=12):
+            st.error("⚠️ انتهت الـ 12 ساعة! إغلاق كافة المراكز وتأمين الرصيد.")
+            bot.close_all('BTC/USDT:USDT')
+            st.session_state.active = False
+            st.stop()
+
+        # 2. فحص تحقيق الهدف (10%)
+        if cur_bal >= target:
+            st.success("💰 مبروك! تم جني 10% أرباح تراكمية. إغلاق الجلسة.")
+            bot.close_all('BTC/USDT:USDT')
+            st.session_state.active = False
+            st.stop()
+
+        # 3. منطق التداول التكراري
+        symbol = 'BTC/USDT:USDT'
+        price, ema = bot.get_market_data(symbol)
+        pos = bot.exchange.fetch_positions([symbol])
+        has_pos = any(float(p['contracts']) != 0 for p in pos)
+
+        if not has_pos:
+            qty = (cur_bal * lev * 0.9) / price
+            if price > ema:
+                st.info("📈 فتح صفقة Long جديدة...")
+                bot.exchange.create_market_buy_order(symbol, bot.exchange.amount_to_precision(symbol, qty))
+            elif price < ema:
+                st.info("📉 فتح صفقة Short جديدة...")
+                bot.exchange.create_market_sell_order(symbol, bot.exchange.amount_to_precision(symbol, qty))
+        else:
+            # مراقبة الصفقة الحالية للإغلاق عند عكس الإشارة
+            p = [x for x in pos if float(x['contracts']) != 0][0]
+            if (p['side'] == 'long' and price < ema) or (p['side'] == 'short' and price > ema):
+                st.warning("🔄 عكس الاتجاه.. إغلاق الصفقة فوراً لجني الربح المتوفر.")
+                bot.close_all(symbol)
+
         time.sleep(20)
         st.rerun()
-    elif current_bal <= 5 and st.session_state.running:
-        st.error("⚠️ الرصيد منخفض جداً للتداول (يجب أن يكون أكثر من 5$)")
-else:
-    st.warning("يرجى إدخال مفاتيح الـ API للبدء.")
-    
+        
