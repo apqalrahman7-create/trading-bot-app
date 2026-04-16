@@ -1,62 +1,113 @@
 import streamlit as st
-import json, os
-from bot_engine import TradingBot
+import ccxt
+import time
+import pandas as pd
 
-# إعداد الصفحة ومنع أخطاء الترجمة
-st.set_page_config(page_title="AI Futures Trader", layout="wide")
-st.markdown("""<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;}</style>""", unsafe_allow_html=True)
+# --- 1. كلاس البوت (المنطق البرمجي) ---
+class TradingBot:
+    def __init__(self, api_key, secret_key):
+        self.exchange = ccxt.binance({  # يمكنك تغيير binance لـ bybit أو غيرها
+            'apiKey': api_key,
+            'secret': secret_key,
+            'enableRateLimit': True,
+            'options': {'defaultType': 'swap'} # للعقود الآجلة
+        })
+        self.is_running = False
 
-# دالة لإدارة حفظ المفاتيح في ملف محلي
-def manage_keys(action="load", data=None):
-    file = "keys_config.json"
-    if action == "save":
-        with open(file, "w") as f: json.dump(data, f)
-    elif os.path.exists(file):
-        with open(file, "r") as f: return json.load(f)
-    return {"key": "", "secret": ""}
+    def get_balance(self):
+        try:
+            balance = self.exchange.fetch_balance()
+            return float(balance['total'].get('USDT', 0))
+        except: return 0.0
 
-st.title("🤖 Smart Futures Terminal")
-saved_keys = manage_keys("load")
+    def close_all_positions(self, symbols):
+        for symbol in symbols:
+            try:
+                positions = self.exchange.fetch_positions([symbol])
+                for pos in positions:
+                    size = float(pos['contracts'])
+                    if size != 0:
+                        side = 'sell' if size > 0 else 'buy'
+                        self.exchange.create_order(symbol, 'market', side, abs(size), params={'reduceOnly': True})
+            except: pass
 
-# الشريط الجانبي لحفظ البيانات
-with st.sidebar:
-    st.header("🔑 API Settings")
-    api_key = st.text_input("MEXC API Key", value=saved_keys["key"], type="password")
-    api_secret = st.text_input("MEXC Secret Key", value=saved_keys["secret"], type="password")
-    if st.button("💾 Save & Remember Me"):
-        manage_keys("save", {"key": api_key, "secret": api_secret})
-        st.success("Keys Saved Safely!")
-    st.divider()
-    st.info("Limit: $10 - $2500 | Target: 10%")
-
-# تشغيل البوت عند توفر المفاتيح
-if api_key and api_secret:
-    try:
-        bot = TradingBot('mexc', api_key, api_secret)
-        balance = bot.get_total_balance()
+    def run_logic(self):
+        self.is_running = True
+        initial_balance = self.get_balance()
+        target_profit = initial_balance * 1.10
+        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT']
         
-        # عرض العدادات (Metrics)
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Wallet Balance", f"${balance:.2f}")
-        col2.metric("Daily Target", "10%", delta=f"${balance*0.1:.2f}")
-        col3.metric("Status", "Active ✅" if "active" in st.session_state else "Standby 💤")
+        yield f"🚀 بدأت الجلسة | الرصيد: ${initial_balance:.2f} | الهدف: ${target_profit:.2f}"
 
-        st.divider()
+        while self.is_running:
+            current_balance = self.get_balance()
+            if current_balance >= target_profit:
+                yield "✅ تم تحقيق ربح 10%! جاري إغلاق الصفقات..."
+                self.close_all_positions(symbols)
+                self.is_running = False
+                break
 
-        # أزرار التحكم
-        if st.button("▶️ START AUTO-TRADING (Background)", type="primary", use_container_width=True):
-            st.session_state["active"] = True
-            st.subheader("📡 Live Market Scanner Activity")
-            # تشغيل المحرك
-            for log_msg in bot.run_automated_logic(balance):
-                st.write(log_msg)
-        
-        if st.button("🛑 STOP BOT", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
+            for symbol in symbols:
+                try:
+                    bars = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=20)
+                    df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+                    ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
+                    price = df['c'].iloc[-1]
 
-    except Exception as e:
-        st.error(f"Connection Error: {e}")
+                    if price > ema:
+                        yield f"📈 شراء {symbol} عند {price}"
+                        self.exchange.create_market_buy_order(symbol, 0.001) # تأكد من حجم اللوت
+                    elif price < ema:
+                        yield f"📉 بيع {symbol} عند {price}"
+                        self.exchange.create_market_sell_order(symbol, 0.001)
+                except Exception as e:
+                    yield f"⚠️ خطأ: {str(e)}"
+                time.sleep(2)
+            time.sleep(10)
+
+# --- 2. واجهة المستخدم (Streamlit UI) ---
+st.set_page_config(page_title="بوت التداول الآلي", page_icon="🤖")
+
+st.title("🤖 نظام التداول الذكي")
+
+# جلب المفاتيح من Secrets
+try:
+    API_KEY = st.secrets["api_key"]
+    SECRET_KEY = st.secrets["secret_key"]
+    bot = TradingBot(API_KEY, SECRET_KEY)
+except:
+    st.error("يرجى ضبط API Key في إعدادات Secrets!")
+    st.stop()
+
+# عرض الرصيد العلوي
+balance = bot.get_balance()
+st.metric("رصيد المحفظة (USDT)", f"{balance:.2f} $")
+
+# حالة البوت
+if 'running' not in st.session_state:
+    st.session_state.running = False
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("▶️ تشغيل البوت", type="primary", use_container_width=True):
+        st.session_state.running = True
+
+with col2:
+    if st.button("🛑 إيقاف وجني الأرباح", type="secondary", use_container_width=True):
+        st.session_state.running = False
+        bot.is_running = False
+        st.warning("جاري إغلاق كل شيء...")
+
+# تشغيل البوت وعرض النتائج
+if st.session_state.running:
+    st.info("البوت نشط الآن...")
+    log_area = st.empty()
+    for message in bot.run_logic():
+        with log_area.container():
+            st.write(message)
+        if not st.session_state.running:
+            break
 else:
-    st.warning("👈 Please enter and save your API Keys to view your wallet.")
+    st.write("البوت في وضع الاستعداد.")
     
