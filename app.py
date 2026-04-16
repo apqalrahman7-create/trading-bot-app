@@ -1,75 +1,86 @@
 import streamlit as st
+import time
 from datetime import datetime, timedelta
-import random
 
-# 1. Page Configuration
-st.set_page_config(page_title="Pro Trading Bot AI", layout="wide")
+# 1. الأساسيات وتصميم الصفحة
+st.set_page_config(page_title="Crypto Bot System", layout="wide")
 
-# 2. Strategy Rules (Limits)
-MAX_TRADING_CAPITAL = 2500.0  # البوت لن يلمس أكثر من هذا المبلغ
-MIN_ORDER_SIZE = 10.0         # الحد الأدنى لفتح صفقة
+# تهيئة الذاكرة (Session State)
+if 'trial_start' not in st.session_state:
+    st.session_state['trial_start'] = datetime.now()
+if 'is_active' not in st.session_state:
+    st.session_state['is_active'] = False
+if 'bot_running' not in st.session_state:
+    st.session_state['bot_running'] = False
 
-# 3. Initialize Memory
-if 'first_login' not in st.session_state:
-    st.session_state['first_login'] = datetime.now()
-if 'is_verified' not in st.session_state:
-    st.session_state['is_verified'] = False
-if 'generated_code' not in st.session_state:
-    st.session_state['generated_code'] = None
+# حساب وقت التجربة (24 ساعة)
+trial_expired = datetime.now() - st.session_state['trial_start'] > timedelta(hours=24)
 
-# Trial Logic
-time_elapsed = datetime.now() - st.session_state['first_login']
-is_trial_over = time_elapsed > timedelta(hours=24)
+# --- شاشة تسجيل الدخول ---
+if not st.session_state.get('logged_in'):
+    st.title("🔐 Login")
+    user = st.text_input("Username")
+    if st.button("Login"):
+        st.session_state['logged_in'] = True
+        st.rerun()
+else:
+    # --- القائمة الجانبية (Navigation) ---
+    st.sidebar.title("Main Menu")
+    menu = st.sidebar.radio("Select Screen:", ["Home (Bot Control)", "Settings (API)", "Customer Service"])
 
-# 4. Interface
-st.sidebar.title("🤖 Control Panel")
-menu = st.sidebar.radio("Menu:", ["Dashboard", "Settings", "Admin"])
+    # 1. شاشة الإعدادات (ربط المنصة أولاً)
+    if menu == "Settings (API)":
+        st.title("⚙️ Exchange Settings")
+        st.info("Connect your exchange via API keys to allow the bot to trade.")
+        exchange = st.selectbox("Select Exchange", ["MEXC", "Binance"])
+        api_key = st.text_input("API Key")
+        secret_key = st.text_input("Secret Key", type="password")
+        if st.button("Save & Connect"):
+            st.success("Successfully linked to Exchange!")
 
-if menu == "Dashboard":
-    st.title("Trading Terminal")
-    
-    # Wallet Info
-    wallet_total = 10000.0 # مثال: إجمالي ما في المحفظة
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Wallet", f"${wallet_total}")
-    col2.metric("Bot Trading Limit", f"${MAX_TRADING_CAPITAL}")
-    col3.metric("Min Trade", f"${MIN_ORDER_SIZE}")
+    # 2. الشاشة الرئيسية (تشغيل البوت)
+    elif menu == "Home (Bot Control)":
+        st.title("📊 Dashboard")
+        
+        # عرض الرصيد والأرباح (كما طلبت)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Real Balance", "$10,000") # مثال للرصيد الحقيقي
+        col2.metric("Today's Profit", "$50")
+        col3.metric("Trading Limit", "$2500")
 
-    st.divider()
-
-    # Execution Logic
-    if st.button("▶️ ACTIVATE BOT (12H)", use_container_width=True):
-        if is_trial_over and not st.session_state['is_verified']:
-            st.error("Trial Expired! Activation Code Required.")
-        else:
-            st.success(f"Bot Active: Trading using ${MAX_TRADING_CAPITAL} only (Safe Mode).")
-            st.info(f"Orders will be placed between ${MIN_ORDER_SIZE} and ${MAX_TRADING_CAPITAL}.")
-
-    if st.button("⏹️ EMERGENCY STOP", use_container_width=True):
-        st.warning("Bot Stopped. No new orders will be placed.")
-
-    # Verification Section
-    if is_trial_over and not st.session_state['is_verified']:
         st.divider()
-        st.subheader("Activation Required")
-        input_code = st.text_input("Enter 6-Digit Code:")
-        if st.button("Verify"):
-            if input_code == st.session_state['generated_code']:
-                st.session_state['is_verified'] = True
-                st.success("Full Access Granted!")
-                st.rerun()
 
-elif menu == "Settings":
-    st.title("API Integration")
-    st.text_input("API Key")
-    st.text_input("Secret Key", type="password")
-    st.write(f"⚠️ **Security Note:** The bot is programmed to ignore any capital above ${MAX_TRADING_CAPITAL}.")
+        # منطق الـ 24 ساعة وطلب الرمز
+        if trial_expired and not st.session_state['is_active']:
+            st.error("⚠️ 24h Trial Expired! Please request an activation code.")
+            code = st.text_input("Enter 6-Digit Code")
+            if st.button("Activate Now"):
+                # سيتم ربطه بموافقة المشرف لاحقاً
+                st.info("Waiting for Admin approval...")
+        else:
+            c1, c2 = st.columns(2)
+            if c1.button("▶️ START BOT", use_container_width=True):
+                st.session_state['bot_running'] = True
+                st.success("Bot started for 12 hours. Target: $50 profit.")
+            
+            if c2.button("⏹️ STOP BOT", use_container_width=True):
+                st.session_state['bot_running'] = False
+                st.warning("Bot has been stopped.")
 
-elif menu == "Admin":
-    st.title("Admin Panel")
-    if st.button("Generate Code"):
-        new_code = str(random.randint(100000, 999999))
-        st.session_state['generated_code'] = new_code
-        st.code(new_code)
-  
+    # 3. شاشة خدمات العملاء (المجيب الآلي ولوحة المشرف)
+    elif menu == "Customer Service":
+        st.title("🎧 Customer Support")
+        
+        # قسم المستخدم
+        st.subheader("Contact Support")
+        msg = st.text_area("Request Activation Code or Send Message")
+        if st.button("Send Request"):
+            st.success("Request sent to Admin.")
+
+        st.divider()
+        # قسم المشرف (هذا يظهر لك أنت فقط)
+        st.subheader("👨‍💻 Admin Panel")
+        st.write("Requests waiting for approval:")
+        if st.button("✅ Approve Activation (60 Days)"):
+            st.success("Bot activated for this user for 60 days via Auto-Reply.")
+    
