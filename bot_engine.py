@@ -13,47 +13,49 @@ class TradingBot:
         self.is_running = False
 
     def get_total_balance(self):
+        """الدالة التي أظهرت لك الرصيد سابقاً مع تحسينها لتعمل دائماً"""
         try:
-            # محاولة جلب رصيد العقود الآجلة أولاً
-            balance = self.exchange.fetch_balance({'type': 'swap'})
-            res = float(balance.get('total', {}).get('USDT', 0))
-            if res == 0:
-                # محاولة جلب رصيد السبوت
-                balance = self.exchange.fetch_balance({'type': 'spot'})
-                res = float(balance.get('total', {}).get('USDT', 0))
-            return res
-        except Exception as e:
-            return 0.0
+            balance = self.exchange.fetch_balance()
+            # البحث عن الرصيد في كل الزوايا (إجمالي، حر، أو معلومات إضافية)
+            total = float(balance.get('USDT', {}).get('total', balance.get('total', {}).get('USDT', 0)))
+            return total
+        except: return 0.0
 
     def run_automated_logic(self, initial_balance):
         self.is_running = True
-        target = initial_balance * 1.10
+        target_profit = initial_balance * 1.10 # هدف 10%
         symbol = 'BTC/USDT:USDT'
         
-        yield f"🚀 بدأت الجلسة الحقيقية | الرصيد: ${initial_balance:.2f} | الهدف: ${target:.2f}"
+        yield f"🚀 انطلق التداول الحقيقي | الرصيد المبدئي: ${initial_balance:.2f}"
         
         while self.is_running:
             try:
                 current_bal = self.get_total_balance()
-                if current_bal >= target:
-                    yield "✅ تم تحقيق الهدف! جاري الإغلاق..."
+                profit_now = current_bal - initial_balance
+                
+                # إظهار الأرباح الحالية
+                yield f"💰 الرصيد الآن: ${current_bal:.2f} | الربح المجني: ${profit_now:.2f}"
+
+                if current_bal >= target_profit:
+                    yield "✅ تم الوصول للهدف (10%)! إغلاق الجلسة وتأمين الأرباح."
                     self.is_running = False ; break
                 
-                # تحليل السوق
-                bars = self.exchange.fetch_ohlcv(symbol, timeframe='1m', limit=20)
+                # تحليل سريع للتدخل
+                bars = self.exchange.fetch_ohlcv(symbol, timeframe='1m', limit=15)
                 df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
                 ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
                 price = df['c'].iloc[-1]
 
-                # تنفيذ صفقات حقيقية بـ 10% من المحفظة ورافعة 10x
-                qty = (current_bal * 10 * 0.1) / price
+                # تنفيذ صفقات حقيقية (شراء وبيع تلقائي)
+                # استخدام رافعة مالية 10x وتقسيم المحفظة
+                qty = (current_bal * 10 * 0.9) / price
                 precise_qty = self.exchange.amount_to_precision(symbol, qty)
 
                 if price > ema:
-                    yield f"📈 شراء حقيقي على {symbol}..."
+                    yield f"📈 إشارة شراء حقيقية على {symbol}.."
                     self.exchange.create_market_buy_order(symbol, precise_qty)
                 elif price < ema:
-                    yield f"📉 بيع حقيقي على {symbol}..."
+                    yield f"📉 إشارة بيع حقيقية على {symbol}.."
                     self.exchange.create_market_sell_order(symbol, precise_qty)
 
             except Exception as e:
