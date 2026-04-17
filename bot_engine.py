@@ -8,49 +8,84 @@ class TradingBot:
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {'defaultType': 'swap'} # العقود الآجلة
+            'options': {
+                'defaultType': 'swap',
+                'adjustForTimeDifference': True 
+            }
         })
         self.is_running = False
-        self.leverage = 5 # رافعة مالية افتراضية
+        self.leverage = 10 # رافعة مالية افتراضية
 
     def get_total_balance(self):
+        """جلب الرصيد الحقيقي من MEXC وإصلاح مشكلة الـ 0.00"""
         try:
-            balance = self.exchange.fetch_balance()
-            return float(balance['total'].get('USDT', 0))
-        except: return 0.0
+            balance = self.exchange.fetch_balance({'type': 'swap'})
+            # محاولة قراءة الرصيد من أكثر من مفتاح (total أو free أو info)
+            usdt_bal = balance.get('USDT', {}).get('total', 0)
+            if usdt_bal == 0:
+                usdt_bal = balance.get('total', {}).get('USDT', 0)
+            return float(usdt_bal)
+        except Exception as e:
+            print(f"Error fetching balance: {e}")
+            return 0.0
+
+    def close_all_positions(self, symbols):
+        """إغلاق كافة الصفقات المفتوحة وإعادة الرصيد للمحفظة"""
+        for symbol in symbols:
+            try:
+                positions = self.exchange.fetch_positions([symbol])
+                for pos in positions:
+                    size = float(pos['contracts'])
+                    if size != 0:
+                        side = 'sell' if size > 0 else 'buy'
+                        self.exchange.create_order(symbol, 'market', side, abs(size), params={'reduceOnly': True})
+            except: pass
 
     def run_automated_logic(self, balance):
         self.is_running = True
-        target_profit = balance * 1.10
-        usable_budget = min(balance, 2500.0)
+        initial_balance = balance
+        target_profit = initial_balance * 1.10 # هدف 10%
         
-        yield f"🚀 Session Started! Budget: ${usable_budget} | Target: ${target_profit:.2f}"
+        yield f"🚀 بدأت الجلسة الذكية! الرصيد: ${initial_balance:.2f} | الهدف: ${target_profit:.2f}"
         
-        # قائمة العملات للمسح الشامل
-        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'AVAX/USDT:USDT', 'LTC/USDT:USDT']
+        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
         
         while self.is_running:
+            current_balance = self.get_total_balance()
+            
+            # 1. فحص الوصول للهدف (10% ربح)
+            if current_balance >= target_profit:
+                yield f"💰 تم تحقيق الهدف بنجاح! الرصيد الحالي: ${current_balance:.2f}"
+                self.close_all_positions(symbols)
+                self.is_running = False
+                break
+            
             for symbol in symbols:
-                yield f"🔍 Scanning: {symbol}..."
+                if not self.is_running: break
+                
                 try:
-                    # تحليل فني مبسط للسعر
+                    # تحليل فني (EMA)
                     bars = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=20)
                     df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-                    df['ema'] = df['c'].ewm(span=10, adjust=False).mean()
-                    
+                    ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
                     price = df['c'].iloc[-1]
-                    ema = df['ema'].iloc[-1]
 
+                    # تحديد كمية الصفقة (تقسيم رأس المال: استخدام 10% من المحفظة)
+                    trade_amount_usdt = current_balance * 0.1
+                    qty = (trade_amount_usdt * self.leverage) / price
+                    precise_qty = float(self.exchange.amount_to_precision(symbol, qty))
+
+                    # 2. تنفيذ التداول التلقائي الذكي
                     if price > ema:
-                        yield f"📈 Bullish on {symbol}. Potential LONG."
+                        yield f"📈 إشارة شراء (Long) على {symbol}..."
+                        self.exchange.create_market_buy_order(symbol, precise_qty)
                     elif price < ema:
-                        yield f"📉 Bearish on {symbol}. Potential SHORT."
-                except: pass
+                        yield f"📉 إشارة بيع (Short) على {symbol}..."
+                        self.exchange.create_market_sell_order(symbol, precise_qty)
+
+                except Exception as e:
+                    yield f"⚠️ تنبيه في {symbol}: {str(e)}"
+                
                 time.sleep(2)
             
-            # فحص الوصول للهدف (10% ربح)
-            if self.get_total_balance() >= target_profit:
-                yield "✅ 10% Profit Target Achieved! Session Closed."
-                break
-            time.sleep(10)
-            
+            time.sleep(15) # انتظار بين دورات المسح
