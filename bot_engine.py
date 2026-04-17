@@ -1,73 +1,77 @@
 import ccxt
-import pandas as pd
 import time
 
-class TradingBot:
-    def __init__(self, exchange_id, api_key, secret_key):
-        self.exchange = getattr(ccxt, exchange_id)({
+class TradingEngine:
+    def __init__(self, api_key, secret_key):
+        # الربط مع MEXC
+        self.exchange = ccxt.mexc({
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {'adjustForTimeDifference': True} 
         })
-        self.is_running = False
+        self.target_profit = 0.10  # هدف 10%
+        self.stop_loss = 0.05      # حماية 5%
 
-    def get_total_balance(self):
-        """Standardized function to fetch balance from Spot and Futures"""
+    def check_volume_spike(self, symbol):
+        """التأكد من وجود سيولة وحركة حقيقية على العملة"""
         try:
-            # 1. Fetch Spot Balance
-            spot_bal = self.exchange.fetch_balance({'type': 'spot'})
-            s_usdt = float(spot_bal.get('total', {}).get('USDT', 0))
-            
-            # 2. Fetch Futures Balance (Swap)
-            swap_bal = self.exchange.fetch_balance({'type': 'swap'})
-            f_usdt = float(swap_bal.get('total', {}).get('USDT', 0))
-            
-            # Return the one that has money (Priority to Spot as per user)
-            return s_usdt if s_usdt >= 5 else f_usdt
+            ticker = self.exchange.fetch_ticker(symbol)
+            volume = ticker['quoteVolume'] # حجم التداول بالدولار
+            # نختار العملات التي حجم تداولها فوق 50 ألف دولار لضمان سهولة البيع
+            if volume > 50000:
+                return True
+            return False
         except:
-            return 0.0
+            return False
 
-    def run_automated_logic(self, balance):
-        self.is_running = True
-        initial_bal = balance
-        target = initial_bal * 1.10
+    def get_signal(self):
+        """البحث عن عملة في بداية انفجار سعري"""
+        self.exchange.load_markets()
+        all_symbols = [s for s in self.exchange.symbols if '/USDT' in s and ':USDT' not in s]
         
-        # Decide Market Type automatically
-        spot_val = self.get_total_balance()
-        market_type = 'spot' if spot_val >= 5 else 'swap'
-        symbol = 'BTC/USDT' if market_type == 'spot' else 'BTC/USDT:USDT'
+        print(f"🔍 فحص محرك الذكاء لـ {len(all_symbols)} عملة...")
         
-        yield f"🚀 Logic Started on {market_type.upper()}! Target: ${target:.2f}"
-        
-        while self.is_running:
+        for symbol in all_symbols:
             try:
-                curr_bal = self.get_total_balance()
-                yield f"💰 Balance: ${curr_bal:.2f} | Profit: ${curr_bal - initial_bal:.2f}"
+                ticker = self.exchange.fetch_ticker(symbol)
+                change = ticker['percentage']
+                
+                # استراتيجية: العملة التي صعدت بين 3% و 7% مع حجم تداول جيد
+                if 3.0 <= change <= 7.0:
+                    if self.check_volume_spike(symbol):
+                        return symbol, ticker['last']
+            except:
+                continue
+        return None, None
 
-                if curr_bal >= target:
-                    yield "✅ Target Reached! Closing session."
-                    self.is_running = False ; break
+    def execute_trade(self, symbol, amount_usdt):
+        """تنفيذ الصفقة وملاحقة الربح"""
+        try:
+            print(f"🚀 إشارة قوية! شراء {symbol} بمبلغ {amount_usdt} USDT")
+            order = self.exchange.create_market_buy_order(symbol, amount_usdt)
+            buy_price = self.exchange.fetch_ticker(symbol)['last']
+            
+            tp_price = buy_price * (1 + self.target_profit)
+            sl_price = buy_price * (1 - self.stop_loss)
 
-                # Technical Analysis
-                bars = self.exchange.fetch_ohlcv(symbol.replace(':USDT',''), timeframe='1m', limit=15)
-                df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-                ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
-                price = df['c'].iloc[-1]
+            print(f"✅ تم الدخول بسعر {buy_price} | الهدف (+10%): {tp_price:.4f}")
 
-                # Execution
-                qty = (curr_bal * 0.95) / price
-                precise_qty = self.exchange.amount_to_precision(symbol, qty)
-                params = {'type': market_type}
+            while True:
+                price = self.exchange.fetch_ticker(symbol)['last']
+                print(f"⏳ مراقبة {symbol}: {price} | الربح المستهدف: {tp_price:.4f}", end='\r')
 
-                if price > ema:
-                    yield f"📈 BUY Signal on {symbol}"
-                    self.exchange.create_market_buy_order(symbol, precise_qty, params)
-                elif price < ema:
-                    yield f"📉 SELL Signal on {symbol}"
-                    self.exchange.create_market_sell_order(symbol, precise_qty, params)
+                if price >= tp_price:
+                    print(f"\n💰 تم تحقيق هدف الـ 10%! جاري جني الأرباح...")
+                    self.exchange.create_market_sell_order(symbol, order['amount'])
+                    return True
 
-            except Exception as e:
-                yield f"⚠️ Alert: {str(e)}"
-            time.sleep(20)
+                if price <= sl_price:
+                    print(f"\n⚠️ خروج اضطراري (وقف خسارة) لحماية الرصيد.")
+                    self.exchange.create_market_sell_order(symbol, order['amount'])
+                    return False
+
+                time.sleep(5)
+        except Exception as e:
+            print(f"❌ خطأ في التنفيذ: {e}")
+            return False
             
