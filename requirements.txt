@@ -1,4 +1,4 @@
-ccxt==4.2.14
-toml==0.10.2
-pandas==2.1.1
-requests==2.31.0
+ccxt
+toml
+streamlit
+pandas
