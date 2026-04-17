@@ -2,85 +2,86 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import time
+from datetime import datetime, timedelta
 
-# --- إعدادات الواجهة ---
-st.set_page_config(page_title="Global AI Sniper", layout="wide")
-st.title("🌐 Global AI Sniper - All MEXC Pairs")
+# --- الإعدادات الفنية ---
+PROFIT_GOAL_PCT = 0.10  # الهدف 10% (5$)
+TRADE_AMOUNT = 12.0     # الدخول بـ 12$ في كل صفقة
+TAKE_PROFIT = 1.015     # جني ربح سريع عند 1.5% (لضمان كثرة الصفقات)
+STOP_LOSS = 0.985       # إيقاف خسارة عند 1.5% لحماية الـ 50$
+CYCLE_HOURS = 12        # مدة الدورة
 
-# مدخلات المستخدم
+st.title("⏱️ MEXC 12h Profit Sniper")
+
+# تهيئة الجلسة
+if 'start_time' not in st.session_state:
+    st.session_state.start_time = datetime.now()
+if 'total_profit' not in st.session_state:
+    st.session_state.total_profit = 0.0
+
+# الربط بالمنصة
 api_key = st.sidebar.text_input("API Key", type="password")
 api_secret = st.sidebar.text_input("Secret Key", type="password")
-budget_per_trade = st.sidebar.number_input("المبلغ لكل صفقة (USDT)", min_value=10.0, value=11.0)
-min_volume = st.sidebar.number_input("أقل حجم تداول 24h للفترة (USDT)", value=100000)
 
-# تهيئة المنصة
 def get_mexc():
-    return ccxt.mexc({
-        'apiKey': api_key,
-        'secret': api_secret,
-        'enableRateLimit': True,
-    })
+    return ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True})
 
-# دالة التحليل الفني
-def analyze_signal(df):
-    if len(df) < 20: return 'hold'
-    # استراتيجية سريعة: تقاطع RSI مع المتوسط
-    df['rsi'] = ccxt.Exchange.calculate_ohlcv_rsi(df['c'].values, 14)
-    last_rsi = df['rsi'].iloc[-1]
-    # إشارة شراء إذا كان الـ RSI تحت 30 (تشبع بيعي) وبدأ بالارتداد
-    if last_rsi < 30:
-        return 'buy'
-    return 'hold'
+if st.sidebar.button("ابدأ دورة الـ 12 ساعة"):
+    ex = get_mexc()
+    st.session_state.start_time = datetime.now()
+    end_time = st.session_state.start_time + timedelta(hours=CYCLE_HOURS)
+    
+    st.info(f"بدأت الدورة. تنتهي الساعة: {end_time.strftime('%H:%M:%S')}")
+    
+    # جلب العملات النشطة فقط (حجم تداول عالي)
+    markets = ex.load_markets()
+    symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
+    
+    while datetime.now() < end_time:
+        # حساب الوقت المتبقي
+        remaining = end_time - datetime.now()
+        st.sidebar.metric("الوقت المتبقي", str(remaining).split('.')[0])
+        st.sidebar.metric("الأرباح المحققة", f"${st.session_state.total_profit:.2f}")
 
-if 'active' not in st.session_state:
-    st.session_state.active = False
-
-col1, col2 = st.columns(2)
-if col1.button("🚀 ابدأ مسح السوق الكامل"): st.session_state.active = True
-if col2.button("🛑 إيقاف"): st.session_state.active = False
-
-log_area = st.empty()
-
-if st.session_state.active:
-    try:
-        exchange = get_mexc()
-        # 1. جلب كافة العملات المتاحة مقابل USDT فقط
-        markets = exchange.load_markets()
-        symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
+        for symbol in symbols:
+            try:
+                # 1. تحليل سريع (قوة نسبية)
+                ticker = ex.fetch_ticker(symbol)
+                # فحص العملات التي بدأت تتحرك (تذبذب)
+                if ticker['percentage'] > 1: # العملات الصاعدة فقط
+                    ohlcv = ex.fetch_ohlcv(symbol, '1m', limit=5)
+                    df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+                    
+                    # شرط الشراء: ارتداد بسيط بعد صعود
+                    if df['c'].iloc[-1] > df['c'].mean():
+                        price = ticker['last']
+                        amount = TRADE_AMOUNT / price
+                        
+                        st.write(f"🎯 قنص سريع: {symbol}")
+                        order = ex.create_market_buy_order(symbol, ex.amount_to_precision(symbol, amount))
+                        
+                        # --- مراقبة اللحظة (بيع فوري) ---
+                        while True:
+                            live_price = ex.fetch_ticker(symbol)['last']
+                            if live_price >= price * TAKE_PROFIT:
+                                bal = ex.fetch_balance()[symbol.split('/')]['free']
+                                ex.create_market_sell_order(symbol, ex.amount_to_precision(symbol, bal))
+                                profit = (live_price - price) * amount
+                                st.session_state.total_profit += profit
+                                st.success(f"💰 ربح سريع من {symbol}: +${profit:.2f}")
+                                break
+                            elif live_price <= price * STOP_LOSS:
+                                bal = ex.fetch_balance()[symbol.split('/')]['free']
+                                ex.create_market_sell_order(symbol, ex.amount_to_precision(symbol, bal))
+                                st.error(f"⚠️ إيقاف خسارة في {symbol}")
+                                break
+                            time.sleep(1)
+            except: continue
         
-        st.info(f"🔍 تم العثور على {len(symbols)} عملة. جاري الفحص...")
-
-        while st.session_state.active:
-            for symbol in symbols:
-                if not st.session_state.active: break
-                
-                try:
-                    # فحص حجم التداول أولاً لتجنب العملات الميتة
-                    ticker = exchange.fetch_ticker(symbol)
-                    if ticker['quoteVolume'] < min_volume: continue
-
-                    # جلب البيانات والتحليل
-                    ohlcv = exchange.fetch_ohlcv(symbol, '1m', limit=30)
-                    df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                    signal = analyze_signal(df)
-
-                    log_area.write(f"⏳ فحص {symbol} | السعر: {ticker['last']} | الإشارة: {signal}")
-
-                    if signal == 'buy':
-                        st.warning(f"🎯 هدف مكتشف! محاولة شراء {symbol}")
-                        # تنفيذ الشراء
-                        amount = budget_per_trade / ticker['last']
-                        precise_amount = exchange.amount_to_precision(symbol, amount)
-                        order = exchange.create_market_buy_order(symbol, precise_amount)
-                        st.success(f"✅ تم شراء {symbol}! رقم الأمر: {order['id']}")
-                        time.sleep(2) # راحة بسيطة بعد كل عملية
-
-                except Exception as e:
-                    continue # تخطي أي عملة بها خطأ في البيانات
-            
-            st.write("♻️ اكتملت دورة المسح الشامل، إعادة البدء...")
-            time.sleep(5)
-
-    except Exception as e:
-        st.error(f"❌ خطأ عام: {e}")
+        if st.session_state.total_profit >= 5.0:
+            st.balloons()
+            st.success("✅ مبروك! حققت هدف الـ 10% قبل نهاية الـ 12 ساعة.")
+            break
+        
+        time.sleep(10)
         
