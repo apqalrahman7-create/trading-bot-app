@@ -1,92 +1,54 @@
-import ccxt
+import streamlit as st
+import pandas as pd
 import time
+from bot_engine import TradingEngine # استدعاء المحرك الذي كتبناه سابقاً
+import toml
 
-# --- إعدادات الحساب ---
-API_KEY = 'ضع_هنا_الـ_ACCESS_KEY'
-SECRET_KEY = 'ضع_هنا_الـ_SECRET_KEY'
+# --- إعدادات الواجهة ---
+st.set_page_config(page_title="MEXC AI Bot", layout="wide")
+st.title("🤖 بوت التداول الذكي - هدف 10%")
 
-# الربط مع منصة MEXC
-exchange = ccxt.mexc({
-    'apiKey': API_KEY,
-    'secret': SECRET_KEY,
-    'enableRateLimit': True,
-})
+# --- قراءة البيانات السرية ---
+config = toml.load("secrets.toml")
+api_key = config['mexc']['api_key']
+secret_key = config['mexc']['secret_key']
 
-# --- إعدادات التداول ---
-TARGET_PROFIT = 0.10  # هدف الربح 10%
-STOP_LOSS = 0.05      # وقف الخسارة 5% لحماية رصيدك
-ORDER_AMOUNT_USDT = 12 # مبلغ الدخول في الصفقة (أكبر من حد المنصة الأدنى)
+# تهيئة المحرك
+bot = TradingEngine(api_key, secret_key)
 
-def get_all_usdt_symbols():
-    """جلب جميع العملات المتاحة للتداول مقابل USDT"""
-    exchange.load_markets()
-    return [symbol for symbol in exchange.symbols if '/USDT' in symbol and ':USDT' not in symbol]
+# --- واجهة العرض (Sidebar) ---
+st.sidebar.header("⚙️ الإعدادات الحالية")
+st.sidebar.write(f"🎯 الهدف: {config['trading_settings']['target_profit']*100}%")
+st.sidebar.write(f"💰 المبلغ: {config['trading_settings']['order_amount']} USDT")
 
-def scan_for_opportunity():
-    """البحث عن عملة صعدت بنسبة 2% في آخر ساعة كإشارة دخول"""
-    symbols = get_all_usdt_symbols()
-    print(f"جاري فحص {len(symbols)} عملة في MEXC...")
+# --- عرض الرصيد المباشر ---
+col1, col2 = st.columns(2)
+with col1:
+    try:
+        balance = bot.exchange.fetch_balance()['total']['USDT']
+        st.metric("رصيد USDT المتاح", f"{balance:.2f} $")
+    except:
+        st.error("خطأ في الربط! تأكد من مفاتيح API")
+
+# --- زر التشغيل ---
+if st.button("🚀 ابدأ البحث عن فرص (10% ربح)"):
+    st.info("جاري فحص السوق الآن.. لا تغلق الصفحة")
     
-    for symbol in symbols:
-        try:
-            ticker = exchange.fetch_ticker(symbol)
-            change = ticker['percentage'] # نسبة التغير في 24 ساعة
-            
-            # استراتيجية بسيطة: إذا صعدت العملة بين 2% و 5% الآن (بداية صعود)
-            if 2.0 <= change <= 5.0:
-                print(f"✅ فرصة مكتشفة في {symbol} | نسبة الصعود: {change}%")
-                return symbol
-        except:
-            continue
-    return None
-
-def trade():
-    print("🚀 البوت بدأ العمل للبحث عن ربح 10%...")
+    # مكان عرض التحديثات المباشرة
+    status = st.empty()
+    log_area = st.empty()
     
     while True:
-        try:
-            # 1. البحث عن فرصة
-            symbol = scan_for_opportunity()
-            
-            if symbol:
-                # 2. تنفيذ أمر شراء بسعر السوق
-                print(f"🛒 محاولة شراء {symbol} بمبلغ {ORDER_AMOUNT_USDT} USDT...")
-                order = exchange.create_market_buy_order(symbol, ORDER_AMOUNT_USDT)
-                buy_price = order['price'] if order['price'] else exchange.fetch_ticker(symbol)['last']
-                
-                print(f"💰 تم الشراء بسعر: {buy_price}")
-
-                # 3. حساب أهداف البيع
-                take_profit_price = buy_price * (1 + TARGET_PROFIT)
-                stop_loss_price = buy_price * (1 - STOP_LOSS)
-
-                # 4. مراقبة الصفقة للبيع عند ربح 10%
-                while True:
-                    current_ticker = exchange.fetch_ticker(symbol)
-                    current_price = current_ticker['last']
-                    
-                    print(f"📊 {symbol} | السعر الحالي: {current_price} | الهدف: {take_profit_price:.4f}", end='\r')
-
-                    if current_price >= take_profit_price:
-                        print(f"\n🎉 تم الوصول لهدف 10%! جاري البيع...")
-                        exchange.create_market_sell_order(symbol, order['amount'])
-                        break
-                    
-                    if current_price <= stop_loss_price:
-                        print(f"\n📉 ضرب وقف الخسارة. جاري الخروج...")
-                        exchange.create_market_sell_order(symbol, order['amount'])
-                        break
-                    
-                    time.sleep(10) # فحص السعر كل 10 ثواني
-            
-            else:
-                print("😴 لا توجد فرص حالياً، سأعيد الفحص بعد دقيقة...")
-                time.sleep(60)
-
-        except Exception as e:
-            print(f"⚠️ حدث خطأ: {e}")
-            time.sleep(30)
-
-if __name__ == "__main__":
-    trade()
-    
+        symbol, price = bot.get_signal()
+        if symbol:
+            status.success(f"✅ تم اكتشاف فرصة في {symbol} بسعر {price}")
+            # تنفيذ الصفقة
+            success = bot.execute_trade(symbol, config['trading_settings']['order_amount'])
+            if success:
+                st.balloons() # احتفال عند تحقيق الربح
+                st.write(f"💰 مبروك! تم تحقيق هدف الـ 10% في عملة {symbol}")
+        else:
+            status.warning("😴 لا توجد فرص قوية حالياً.. إعادة الفحص بعد 30 ثانية")
+        
+        time.sleep(30)
+        
