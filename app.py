@@ -1,72 +1,50 @@
 import streamlit as st
 import ccxt
-import pandas as pd
 import time
 
-# إعدادات الواجهة
 st.set_page_config(page_title="MEXC AI BOT", layout="wide")
 
-# --- محرك البوت الذكي ---
 class TradingBot:
     def __init__(self, api, secret):
         self.exchange = ccxt.mexc({
-            'apiKey': api,
-            'secret': secret,
+            'apiKey': api, 'secret': secret,
             'enableRateLimit': True,
             'options': {'adjustForTimeDifference': True}
         })
 
-    def get_balance(self):
+    def get_total_balance(self):
         try:
-            # البحث في العقود الآجلة أولاً ثم السبوت
-            bal = self.exchange.fetch_balance({'type': 'swap'})
-            total = float(bal.get('total', {}).get('USDT', 0))
-            if total < 1:
-                bal = self.exchange.fetch_balance({'type': 'spot'})
-                total = float(bal.get('total', {}).get('USDT', 0))
-            return total
-        except: return 0.0
+            # جلب الرصيد من السبوت والفيوتشر معاً
+            spot = self.exchange.fetch_balance({'type': 'spot'})
+            futures = self.exchange.fetch_balance({'type': 'swap'})
+            
+            spot_usdt = float(spot.get('total', {}).get('USDT', 0))
+            futures_usdt = float(futures.get('total', {}).get('USDT', 0))
+            
+            return spot_usdt, futures_usdt
+        except: return 0.0, 0.0
 
-    def run_bot(self, balance):
-        initial_bal = balance
-        target = initial_bal * 1.10
-        yield f"🚀 Started! Target: ${target:.2f}"
-        
-        while True:
-            try:
-                curr_bal = self.get_balance()
-                if curr_bal >= target:
-                    yield "✅ Target Reached! 10% Profit Achieved."
-                    break
-                
-                # تحليل سريع للبيتكوين
-                bars = self.exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='1m', limit=10)
-                price = bars[-1][4]
-                yield f"🔍 Analyzing... Current Price: ${price} | Balance: ${curr_bal:.2f}"
-            except: pass
-            time.sleep(20)
-
-# --- واجهة المستخدم ---
-st.title("🤖 AI Trading Bot (MEXC)")
+st.title("🤖 MEXC Smart Trader")
 
 with st.sidebar:
-    st.header("🔐 API Keys")
     api = st.text_input("API Key", type="password")
     sec = st.text_input("Secret Key", type="password")
 
 if api and sec:
     bot = TradingBot(api, sec)
-    real_bal = bot.get_balance()
-    
-    st.metric("Total Balance (USDT)", f"${real_bal:.2f}")
+    spot_bal, futures_bal = bot.get_total_balance()
+    total = spot_bal + futures_bal
 
-    if st.button("🚀 START TRADING"):
-        if real_bal > 0:
-            st.info("Bot is active and scanning markets...")
-            for msg in bot.run_bot(real_bal):
-                st.write(msg)
-        else:
-            st.error("Balance is 0. Please add USDT to your MEXC wallet.")
-else:
-    st.warning("Please enter your API Keys to start.")
-    
+    st.subheader("💰 إحصائيات المحفظة الحقيقية")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("رصيد السبوت", f"${spot_bal:.2f}")
+    c2.metric("رصيد الفيوتشر", f"${futures_bal:.2f}")
+    c3.metric("إجمالي الرصيد", f"${total:.2f}", delta="USDT")
+
+    if total >= 5:
+        if st.button("🚀 ابدأ التداول التلقائي"):
+            st.success("تم تفعيل البوت.. جاري البحث عن صفقات")
+            # (هنا يوضع منطق التداول الحقيقي)
+    else:
+        st.warning(f"⚠️ الرصيد الحالي (${total:.2f}) أقل من الحد الأدنى المطلوب للتداول ($5)")
+        
