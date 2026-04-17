@@ -3,98 +3,84 @@ import ccxt
 import pandas as pd
 import time
 
-# إعداد واجهة المستخدم
-st.set_page_config(page_title="MEXC AI Sniper", page_icon="⚡")
-st.title("⚡ AI Sniper - Instant Execution")
+# --- إعدادات الواجهة ---
+st.set_page_config(page_title="Global AI Sniper", layout="wide")
+st.title("🌐 Global AI Sniper - All MEXC Pairs")
 
-# الإعدادات في الجانب الجانبي
-st.sidebar.header("⚙️ إعدادات البوت")
+# مدخلات المستخدم
 api_key = st.sidebar.text_input("API Key", type="password")
 api_secret = st.sidebar.text_input("Secret Key", type="password")
-symbol = st.sidebar.text_input("الزوج (مثال: BTC/USDT)", value="BTC/USDT")
-amount_usdt = st.sidebar.number_input("مبلغ الشراء بـ USDT", min_value=10.0, value=15.0)
+budget_per_trade = st.sidebar.number_input("المبلغ لكل صفقة (USDT)", min_value=10.0, value=11.0)
+min_volume = st.sidebar.number_input("أقل حجم تداول 24h للفترة (USDT)", value=100000)
 
-# تهيئة الاتصال بالمنصة
-def init_exchange(key, secret):
+# تهيئة المنصة
+def get_mexc():
     return ccxt.mexc({
-        'apiKey': key,
-        'secret': secret,
+        'apiKey': api_key,
+        'secret': api_secret,
         'enableRateLimit': True,
-        'options': {'defaultType': 'spot'}
     })
 
-# دالة جلب البيانات والتحليل
-def get_signal(exchange, symbol):
-    bars = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=50)
-    df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-    
-    # استراتيجية بسيطة: تقاطع المتوسطات
-    df['sma_fast'] = df['c'].rolling(window=5).mean()
-    df['sma_slow'] = df['c'].rolling(window=20).mean()
-    
-    last_row = df.iloc[-1]
-    prev_row = df.iloc[-2]
-    
-    if prev_row['sma_fast'] < prev_row['sma_slow'] and last_row['sma_fast'] > last_row['sma_slow']:
+# دالة التحليل الفني
+def analyze_signal(df):
+    if len(df) < 20: return 'hold'
+    # استراتيجية سريعة: تقاطع RSI مع المتوسط
+    df['rsi'] = ccxt.Exchange.calculate_ohlcv_rsi(df['c'].values, 14)
+    last_rsi = df['rsi'].iloc[-1]
+    # إشارة شراء إذا كان الـ RSI تحت 30 (تشبع بيعي) وبدأ بالارتداد
+    if last_rsi < 30:
         return 'buy'
-    elif prev_row['sma_fast'] > prev_row['sma_slow'] and last_row['sma_fast'] < last_row['sma_slow']:
-        return 'sell'
     return 'hold'
 
-# التحكم في التشغيل
-if 'running' not in st.session_state:
-    st.session_state.running = False
+if 'active' not in st.session_state:
+    st.session_state.active = False
 
 col1, col2 = st.columns(2)
-if col1.button("🚀 تشغيل البوت"):
-    if not api_key or not api_secret:
-        st.error("الرجاء إدخال مفاتيح API أولاً!")
-    else:
-        st.session_state.running = True
+if col1.button("🚀 ابدأ مسح السوق الكامل"): st.session_state.active = True
+if col2.button("🛑 إيقاف"): st.session_state.active = False
 
-if col2.button("🛑 إيقاف"):
-    st.session_state.running = False
+log_area = st.empty()
 
-# حلقة التنفيذ الرئيسية
-status_box = st.empty()
-log_box = st.container()
-
-if st.session_state.running:
+if st.session_state.active:
     try:
-        mexc = init_exchange(api_key, api_secret)
-        status_box.success(f"البوت يعمل الآن على زوج {symbol}...")
+        exchange = get_mexc()
+        # 1. جلب كافة العملات المتاحة مقابل USDT فقط
+        markets = exchange.load_markets()
+        symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
         
-        while st.session_state.running:
-            signal = get_signal(mexc, symbol)
-            current_price = mexc.fetch_ticker(symbol)['last']
-            
-            with log_box:
-                st.write(f"🔍 تحليل: السعر {current_price} | الإشارة: {signal}")
-            
-            if signal == 'buy':
-                st.warning("🎯 إشارة شراء اكتشفت! جاري التنفيذ...")
-                # حساب الكمية بناءً على المبلغ والدقة المطلوبة في MEXC
-                amount = amount_usdt / current_price
-                precise_amount = mexc.amount_to_precision(symbol, amount)
-                
-                order = mexc.create_market_buy_order(symbol, precise_amount)
-                st.balloons()
-                st.success(f"✅ تم الشراء بنجاح! رقم العملية: {order['id']}")
-                # توقف مؤقت بعد الشراء لتجنب تكرار الصفقات
-                time.sleep(60) 
+        st.info(f"🔍 تم العثور على {len(symbols)} عملة. جاري الفحص...")
 
-            elif signal == 'sell':
-                st.info("🎯 إشارة بيع اكتشفت! جاري التنفيذ...")
-                # هنا تحتاج لجلب رصيد العملة لبيعها بالكامل
-                balance = mexc.fetch_balance()[symbol.split('/')[0]]['free']
-                if balance > 0:
-                    precise_sell = mexc.amount_to_precision(symbol, balance)
-                    order = mexc.create_market_sell_order(symbol, precise_sell)
-                    st.success(f"✅ تم البيع بنجاح! رقم العملية: {order['id']}")
+        while st.session_state.active:
+            for symbol in symbols:
+                if not st.session_state.active: break
                 
-            time.sleep(10) # فحص كل 10 ثواني
+                try:
+                    # فحص حجم التداول أولاً لتجنب العملات الميتة
+                    ticker = exchange.fetch_ticker(symbol)
+                    if ticker['quoteVolume'] < min_volume: continue
+
+                    # جلب البيانات والتحليل
+                    ohlcv = exchange.fetch_ohlcv(symbol, '1m', limit=30)
+                    df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+                    signal = analyze_signal(df)
+
+                    log_area.write(f"⏳ فحص {symbol} | السعر: {ticker['last']} | الإشارة: {signal}")
+
+                    if signal == 'buy':
+                        st.warning(f"🎯 هدف مكتشف! محاولة شراء {symbol}")
+                        # تنفيذ الشراء
+                        amount = budget_per_trade / ticker['last']
+                        precise_amount = exchange.amount_to_precision(symbol, amount)
+                        order = exchange.create_market_buy_order(symbol, precise_amount)
+                        st.success(f"✅ تم شراء {symbol}! رقم الأمر: {order['id']}")
+                        time.sleep(2) # راحة بسيطة بعد كل عملية
+
+                except Exception as e:
+                    continue # تخطي أي عملة بها خطأ في البيانات
             
+            st.write("♻️ اكتملت دورة المسح الشامل، إعادة البدء...")
+            time.sleep(5)
+
     except Exception as e:
-        st.error(f"❌ حدث خطأ: {str(e)}")
-        st.session_state.running = False
+        st.error(f"❌ خطأ عام: {e}")
         
