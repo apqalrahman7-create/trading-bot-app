@@ -1,85 +1,100 @@
 import streamlit as st
-import threading
-import time
 import ccxt
+import pandas as pd
+import time
 
-st.set_page_config(page_title="MEXC AI Sniper", layout="centered")
+# إعداد واجهة المستخدم
+st.set_page_config(page_title="MEXC AI Sniper", page_icon="⚡")
 st.title("⚡ AI Sniper - Instant Execution")
 
-# مساحة لتحديث البيانات حياً
-status_placeholder = st.empty()
-info_placeholder = st.empty()
+# الإعدادات في الجانب الجانبي
+st.sidebar.header("⚙️ إعدادات البوت")
+api_key = st.sidebar.text_input("API Key", type="password")
+api_secret = st.sidebar.text_input("Secret Key", type="password")
+symbol = st.sidebar.text_input("الزوج (مثال: BTC/USDT)", value="BTC/USDT")
+amount_usdt = st.sidebar.number_input("مبلغ الشراء بـ USDT", min_value=10.0, value=15.0)
 
-if 'bot_active' not in st.session_state:
-    st.session_state.bot_active = False
-
-def trading_engine(api_key, api_secret):
-    exchange = ccxt.mexc({
-        'apiKey': api_key,
-        'secret': api_secret,
+# تهيئة الاتصال بالمنصة
+def init_exchange(key, secret):
+    return ccxt.mexc({
+        'apiKey': key,
+        'secret': secret,
         'enableRateLimit': True,
         'options': {'defaultType': 'spot'}
     })
 
-    while st.session_state.bot_active:
-        try:
-            balance = exchange.fetch_balance()
-            free_usdt = balance['free'].get('USDT', 0)
-            
-            if free_usdt < 10: 
-                status_placeholder.warning("⚠️ رصيد USDT غير كافٍ (أقل من 10)")
-                time.sleep(30)
-                continue
+# دالة جلب البيانات والتحليل
+def get_signal(exchange, symbol):
+    bars = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=50)
+    df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+    
+    # استراتيجية بسيطة: تقاطع المتوسطات
+    df['sma_fast'] = df['c'].rolling(window=5).mean()
+    df['sma_slow'] = df['c'].rolling(window=20).mean()
+    
+    last_row = df.iloc[-1]
+    prev_row = df.iloc[-2]
+    
+    if prev_row['sma_fast'] < prev_row['sma_slow'] and last_row['sma_fast'] > last_row['sma_slow']:
+        return 'buy'
+    elif prev_row['sma_fast'] > prev_row['sma_slow'] and last_row['sma_fast'] < last_row['sma_slow']:
+        return 'sell'
+    return 'hold'
 
-            tickers = exchange.fetch_tickers()
-            valid_pairs = {k: v for k, v in tickers.items() if '/USDT' in k and v['percentage'] is not None}
-            sorted_pairs = sorted(valid_pairs.items(), key=lambda x: x[1]['percentage'], reverse=True)
-
-            if sorted_pairs:
-                target_symbol = sorted_pairs[0][0]
-                price = sorted_pairs[0][1]['last']
-                
-                # حساب الكمية بدقة
-                raw_amount = (free_usdt * 0.95) / price 
-                amount = exchange.amount_to_precision(target_symbol, raw_amount)
-                
-                status_placeholder.info(f"🎯 محاولة شراء: {target_symbol}")
-                exchange.create_market_buy_order(target_symbol, amount)
-                entry_price = price
-                
-                # حلقة المراقبة
-                while st.session_state.bot_active:
-                    ticker = exchange.fetch_ticker(target_symbol)
-                    curr_price = ticker['last']
-                    profit = ((curr_price - entry_price) / entry_price) * 100
-                    
-                    info_placeholder.metric(label=f"Trading {target_symbol}", value=f"{profit:.2f}%", delta=f"{curr_price}")
-                    
-                    if profit >= 5.0 or profit <= -1.5: # أهداف واقعية أكثر
-                        # جلب الرصيد المتاح من العملة للبيع بالكامل
-                        sell_balance = exchange.fetch_balance()['free'].get(target_symbol.split('/')[0], 0)
-                        exchange.create_market_sell_order(target_symbol, exchange.amount_to_precision(target_symbol, sell_balance))
-                        status_placeholder.success(f"✅ تم الإغلاق بربح: {profit:.2f}%")
-                        break
-                    time.sleep(2)
-
-            time.sleep(5)
-        except Exception as e:
-            status_placeholder.error(f"Error: {e}")
-            time.sleep(10)
-
-# --- UI ---
-with st.sidebar:
-    k = st.text_input("MEXC API Key", type="password")
-    s = st.text_input("MEXC Secret Key", type="password")
+# التحكم في التشغيل
+if 'running' not in st.session_state:
+    st.session_state.running = False
 
 col1, col2 = st.columns(2)
-with col1:
-    if st.button("🚀 تشغيل", use_container_width=True):
-        if k and s:
-            st.session_state.bot_active = True
-            threading.Thread(target=trading_engine, args=(k, s), daemon=True).start()
-with col2:
-    if st.button("🛑 إيقاف", use_container_width=True):
-        st.session_state.bot_active = False
+if col1.button("🚀 تشغيل البوت"):
+    if not api_key or not api_secret:
+        st.error("الرجاء إدخال مفاتيح API أولاً!")
+    else:
+        st.session_state.running = True
+
+if col2.button("🛑 إيقاف"):
+    st.session_state.running = False
+
+# حلقة التنفيذ الرئيسية
+status_box = st.empty()
+log_box = st.container()
+
+if st.session_state.running:
+    try:
+        mexc = init_exchange(api_key, api_secret)
+        status_box.success(f"البوت يعمل الآن على زوج {symbol}...")
+        
+        while st.session_state.running:
+            signal = get_signal(mexc, symbol)
+            current_price = mexc.fetch_ticker(symbol)['last']
+            
+            with log_box:
+                st.write(f"🔍 تحليل: السعر {current_price} | الإشارة: {signal}")
+            
+            if signal == 'buy':
+                st.warning("🎯 إشارة شراء اكتشفت! جاري التنفيذ...")
+                # حساب الكمية بناءً على المبلغ والدقة المطلوبة في MEXC
+                amount = amount_usdt / current_price
+                precise_amount = mexc.amount_to_precision(symbol, amount)
+                
+                order = mexc.create_market_buy_order(symbol, precise_amount)
+                st.balloons()
+                st.success(f"✅ تم الشراء بنجاح! رقم العملية: {order['id']}")
+                # توقف مؤقت بعد الشراء لتجنب تكرار الصفقات
+                time.sleep(60) 
+
+            elif signal == 'sell':
+                st.info("🎯 إشارة بيع اكتشفت! جاري التنفيذ...")
+                # هنا تحتاج لجلب رصيد العملة لبيعها بالكامل
+                balance = mexc.fetch_balance()[symbol.split('/')[0]]['free']
+                if balance > 0:
+                    precise_sell = mexc.amount_to_precision(symbol, balance)
+                    order = mexc.create_market_sell_order(symbol, precise_sell)
+                    st.success(f"✅ تم البيع بنجاح! رقم العملية: {order['id']}")
+                
+            time.sleep(10) # فحص كل 10 ثواني
+            
+    except Exception as e:
+        st.error(f"❌ حدث خطأ: {str(e)}")
+        st.session_state.running = False
         
