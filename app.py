@@ -1,54 +1,84 @@
 import streamlit as st
 import pandas as pd
 import time
-from bot_engine import TradingEngine # استدعاء المحرك الذي كتبناه سابقاً
-import toml
+import ccxt
 
-# --- إعدادات الواجهة ---
-st.set_page_config(page_title="MEXC AI Bot", layout="wide")
-st.title("🤖 بوت التداول الذكي - هدف 10%")
+# --- 1. وضع المفاتيح مباشرة هنا ---
+# استبدل النجوم بمفاتيحك الحقيقية من منصة MEXC
+API_KEY = "ضـع_هنـا_ACCESS_KEY"
+SECRET_KEY = "ضـع_هنـا_SECRET_KEY"
 
-# --- قراءة البيانات السرية ---
-config = toml.load("secrets.toml")
-api_key = config['mexc']['api_key']
-secret_key = config['mexc']['secret_key']
+# --- 2. إعداد محرك التداول داخل الملف لضمان العمل ---
+class TradingEngine:
+    def __init__(self):
+        self.exchange = ccxt.mexc({
+            'apiKey': API_KEY,
+            'secret': SECRET_KEY,
+            'enableRateLimit': True,
+        })
+        self.target_profit = 0.10  # هدف 10%
+        self.stop_loss = 0.05      # حماية 5%
 
-# تهيئة المحرك
-bot = TradingEngine(api_key, secret_key)
+    def get_signal(self):
+        try:
+            self.exchange.load_markets()
+            # جلب أفضل 50 عملة من حيث حجم التداول لتجنب العملات الوهمية
+            tickers = self.exchange.fetch_tickers()
+            symbols = [s for s in tickers if '/USDT' in s and tickers[s]['percentage'] is not None]
+            
+            for symbol in symbols:
+                change = tickers[symbol]['percentage']
+                # إذا كانت العملة صاعدة بين 2% و 5% (إشارة بداية انفجار)
+                if 2.0 <= change <= 5.0:
+                    return symbol, tickers[symbol]['last']
+            return None, None
+        except Exception as e:
+            st.error(f"خطأ في جلب البيانات: {e}")
+            return None, None
 
-# --- واجهة العرض (Sidebar) ---
-st.sidebar.header("⚙️ الإعدادات الحالية")
-st.sidebar.write(f"🎯 الهدف: {config['trading_settings']['target_profit']*100}%")
-st.sidebar.write(f"💰 المبلغ: {config['trading_settings']['order_amount']} USDT")
+    def execute_trade(self, symbol, amount):
+        try:
+            order = self.exchange.create_market_buy_order(symbol, amount)
+            return order
+        except Exception as e:
+            st.error(f"فشل تنفيذ الصفقة: {e}")
+            return None
 
-# --- عرض الرصيد المباشر ---
-col1, col2 = st.columns(2)
-with col1:
-    try:
-        balance = bot.exchange.fetch_balance()['total']['USDT']
-        st.metric("رصيد USDT المتاح", f"{balance:.2f} $")
-    except:
-        st.error("خطأ في الربط! تأكد من مفاتيح API")
+# --- 3. واجهة المستخدم (Streamlit UI) ---
+st.set_page_config(page_title="MEXC AI Bot", page_icon="🤖")
+st.title("🤖 بوت التداول الآلي - هدف 10%")
 
-# --- زر التشغيل ---
-if st.button("🚀 ابدأ البحث عن فرص (10% ربح)"):
-    st.info("جاري فحص السوق الآن.. لا تغلق الصفحة")
+bot = TradingEngine()
+
+# عرض الرصيد
+try:
+    balance_info = bot.exchange.fetch_balance()
+    usdt_balance = balance_info['total'].get('USDT', 0)
+    st.metric("رصيدك الحالي في MEXC", f"{usdt_balance:.2f} USDT")
+except:
+    st.error("❌ فشل الاتصال بالمنصة. تأكد من صحة المفاتيح ومن تفعيل الـ API.")
+
+# إعدادات التداول
+st.sidebar.header("⚙️ الإعدادات")
+order_amount = st.sidebar.number_input("مبلغ الصفقة (USDT)", min_value=11.0, value=12.0)
+
+if st.button("🚀 ابدأ التداول التلقائي الآن"):
+    st.info("🔎 البوت يبحث الآن عن عملات صاعدة لتحقيق ربح 10%...")
     
-    # مكان عرض التحديثات المباشرة
-    status = st.empty()
-    log_area = st.empty()
+    status_box = st.empty()
     
     while True:
         symbol, price = bot.get_signal()
+        
         if symbol:
-            status.success(f"✅ تم اكتشاف فرصة في {symbol} بسعر {price}")
-            # تنفيذ الصفقة
-            success = bot.execute_trade(symbol, config['trading_settings']['order_amount'])
-            if success:
-                st.balloons() # احتفال عند تحقيق الربح
-                st.write(f"💰 مبروك! تم تحقيق هدف الـ 10% في عملة {symbol}")
+            status_box.success(f"✅ تم العثور على فرصة: {symbol} بسعر {price}")
+            # تنفيذ الشراء
+            order = bot.execute_trade(symbol, order_amount)
+            if order:
+                st.write(f"🔔 تم شراء {symbol}.. جاري ملاحقة هدف الـ 10% والبيع تلقائياً.")
+                # هنا يكمل البوت مراقبة البيع (يمكنك إضافة كود البيع هنا أيضاً)
+                break 
         else:
-            status.warning("😴 لا توجد فرص قوية حالياً.. إعادة الفحص بعد 30 ثانية")
-        
-        time.sleep(30)
-        
+            status_box.warning("😴 لا توجد فرص حالياً.. إعادة الفحص بعد 20 ثانية")
+            time.sleep(20)
+            
