@@ -1,67 +1,42 @@
 import streamlit as st
-import ccxt
-import pandas as pd
+from bot_engine import TradingBot
 import time
 
-# --- إعدادات الصفحة ---
-st.set_page_config(page_title="MEXC AI Bot", layout="wide")
+st.set_page_config(page_title="MEXC AI BOT", layout="wide")
+st.title("🤖 منصة التداول الآلي الذكية")
 
-class MexcPowerBot:
-    def __init__(self, api, secret):
-        self.exchange = ccxt.mexc({
-            'apiKey': api,
-            'secret': secret,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'swap'} # لضمان الدخول لمحفظة العقود الآجلة
-        })
+# إدخال المفاتيح في الشاشة الرئيسية
+with st.expander("🔐 إعدادات API (ادخل مفاتيحك هنا)", expanded=True):
+    col_a, col_b = st.columns(2)
+    api = col_a.text_input("API Key", type="password")
+    sec = col_b.text_input("Secret Key", type="password")
 
-    def get_real_balance(self):
-        """طريقة إجبارية لجلب الرصيد الحقيقي من MEXC"""
-        try:
-            # 1. تحديث التوقيت مع السيرفر لمنع رفض الطلب
-            self.exchange.load_markets()
-            
-            # 2. طلب الرصيد الخاص بالعقود الآجلة تحديداً
-            balance_data = self.exchange.fetch_balance({'type': 'swap'})
-            
-            # 3. البحث عن USDT في جميع مستويات الاستجابة
-            total_usdt = 0.0
-            if 'USDT' in balance_data:
-                total_usdt = float(balance_data['USDT'].get('total', 0))
-            
-            # إذا ظل صفراً، نجرب الطريقة البديلة (البحث في القائمة الشاملة)
-            if total_usdt == 0:
-                for b in balance_data.get('info', []):
-                    if b.get('asset') == 'USDT':
-                        total_usdt = float(b.get('total', 0))
-                        break
-            
-            return total_usdt
-        except Exception as e:
-            return f"Error: {str(e)}"
+if api and sec:
+    bot = TradingBot('mexc', api, sec)
+    res_bal = bot.get_total_balance()
+    
+    # عرض الرصيد فوراً
+    st.metric("رصيدك الحقيقي في MEXC", f"${res_bal:.2f} USDT")
 
-# --- الواجهة الرئيسية ---
-st.title("🤖 بوت MEXC المطور (حل مشكلة الرصيد الصفر)")
+    if 'active' not in st.session_state: st.session_state.active = False
 
-with st.sidebar:
-    api_key = st.text_input("API Key", type="password")
-    secret_key = st.text_input("Secret Key", type="password")
+    col1, col2 = st.columns(2)
+    if col1.button("🚀 ابدأ التداول التلقائي", type="primary", use_container_width=True):
+        st.session_state.active = True
+    
+    if col2.button("🛑 إيقاف فوري", use_container_width=True):
+        st.session_state.active = False
 
-if api_key and secret_key:
-    bot = MexcPowerBot(api_key, secret_key)
-    # استدعاء الرصيد بالطريقة الجديدة
-    balance = bot.get_real_balance()
-
-    if isinstance(balance, float):
-        st.metric("الرصيد المكتشف في المحفظة", f"${balance:.2f} USDT")
-        
-        if balance > 0:
-            st.success("✅ تم اكتشاف الرصيد بنجاح! البوت جاهز للتداول.")
-            # هنا تضع زر التشغيل ومنطق التداول الذي أعطيتك إياه سابقاً
+    if st.session_state.active:
+        if res_bal > 5:
+            st.success("🔄 البوت يعمل الآن ويراقب السوق...")
+            log_area = st.empty()
+            for msg in bot.run_automated_logic(res_bal):
+                with log_area.container(): st.write(msg)
+                if not st.session_state.active: break
+                time.sleep(1)
         else:
-            st.warning("⚠️ الرصيد يظهر 0.00. تأكد من تحويل USDT إلى محفظة Futures داخل MEXC.")
-    else:
-        st.error(f"❌ خطأ في الاتصال: {balance}")
+            st.error("⚠️ الرصيد صفر أو أقل من 5$ - تأكد من وجود USDT في محفظة Futures")
 else:
-    st.info("بانتظار إدخال المفاتيح...")
+    st.warning("👈 يرجى إدخال مفاتيح الـ API في الصندوق أعلاه لتفعيل الأزرار.")
     
