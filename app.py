@@ -1,88 +1,61 @@
 import streamlit as st
-from bot_engine import TradingBot
+import pandas as pd
+from pymexc import spot
 import time
 
-# --- 1. Page Configuration ---
-st.set_page_config(
-    page_title="AI Trading Control Center",
-    page_icon="🤖",
-    layout="wide"
-)
+# --- إعدادات الصفحة ---
+st.set_page_config(page_title="AI Trading Bot", layout="wide")
+st.title("🤖 بوت التداول الذكي - MEXC")
 
-# Application Header
-st.title("🤖 AI Trading Bot Control Panel (MEXC)")
-st.markdown("---")
-
-# --- 2. Sidebar Configuration (API Keys) ---
+# --- المدخلات (مفاتيح API) ---
 with st.sidebar:
-    st.header("🔐 Connection Settings")
-    st.write("Enter your MEXC API credentials:")
-    api_key = st.text_input("Access Key (API Key)", type="password")
+    st.header("إعدادات الاتصال")
+    api_key = st.text_input("API Key", type="password")
     secret_key = st.text_input("Secret Key", type="password")
-    
-    st.divider()
-    st.info("Note: The bot will trade in the wallet where funds (USDT) are available.")
+    symbol = st.text_input("العملة (مثلاً BTCUSDT)", value="BTCUSDT")
+    trade_amount = st.number_input("مبلغ التداول ($)", min_value=5, value=10)
 
-# --- 3. Main Dashboard Logic ---
+# --- الاتصال بالمنصة ---
 if api_key and secret_key:
-    # Initialize the trading engine
-    bot = TradingBot('mexc', api_key, secret_key)
-    
-    # Fetch real-time balance from the bot engine
-    current_balance = bot.get_total_balance()
-    
-    # Display Balance Metrics
-    st.subheader("💰 Live Portfolio Status")
-    col_bal, col_status = st.columns(2)
-    
-    with col_bal:
-        st.metric("Total Real-Time Balance (USDT)", f"${current_balance:.2f}")
-    
-    with col_status:
-        if current_balance > 0:
-            st.success("✅ Connection Active: Balance Found")
-        else:
-            st.warning("⚠️ Connected: Balance is $0.00 (Check Spot/Futures Wallet)")
-
-    st.markdown("---")
-
-    # Bot Control State
-    if 'is_active' not in st.session_state:
-        st.session_state.is_active = False
-
-    # Control Buttons
-    btn_start, btn_stop = st.columns(2)
-    
-    with btn_start:
-        if st.button("🚀 START AUTOMATED TRADING", type="primary", use_container_width=True):
-            if current_balance >= 5: # Minimum exchange requirement
-                st.session_state.is_active = True
-            else:
-                st.error("❌ Error: Insufficient balance ($5 minimum required)")
-
-    with btn_stop:
-        if st.button("🛑 STOP SESSION", use_container_width=True):
-            st.session_state.is_active = False
-            st.warning("Stop command issued to the engine.")
-
-    # --- 4. Live Operation Logs ---
-    if st.session_state.is_active:
-        st.subheader("📊 Live Trading Logs")
-        log_area = st.empty()
-        
-        # Start the trading cycle from bot_engine
-        for message in bot.run_automated_logic(current_balance):
-            with log_area.container():
-                st.info(message)
-            
-            # Check for manual stop
-            if not st.session_state.is_active:
-                bot.is_running = False
-                break
-            
-            # Allow for UI refresh
-            time.sleep(1)
+    client = spot.HTTP(api_key=api_key, api_secret=secret_key)
 else:
-    # Prompt for credentials
-    st.warning("👈 Please enter your API Keys in the sidebar to activate the control panel.")
+    st.warning("يرجى إدخال مفاتيح الـ API في القائمة الجانبية.")
+    st.stop()
+
+# --- واجهة العرض الرئيسية ---
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("💰 الرصيد الحالي")
+    if st.button("تحديث الرصيد"):
+        acc = client.account_info()
+        balances = [b for b in acc['balances'] if float(b['free']) > 0]
+        st.table(balances)
+
+with col2:
+    st.subheader("📈 مراقبة السوق")
+    status_placeholder = st.empty()
+    price_placeholder = st.empty()
+
+# --- زر التشغيل الرئيسي ---
+if st.button("🚀 تشغيل البوت الآن"):
+    st.success(f"تم تفعيل البوت على زوج {symbol}")
     
+    # حلقة تشغيل البوت
+    while True:
+        try:
+            ticker = client.ticker_price(symbol)
+            current_price = float(ticker['price'])
+            
+            price_placeholder.metric(label=f"سعر {symbol} الآن", value=f"${current_price}")
+            
+            # --- هنا يتدخل الذكاء الاصطناعي الخاص بك لاتخاذ القرار ---
+            # مثال: قرر الذكاء الاصطناعي الشراء (AI_DECISION == "BUY")
+            
+            status_placeholder.info("البوت يحلل البيانات حالياً...")
+            time.sleep(5) # فحص كل 5 ثوانٍ
+            
+        except Exception as e:
+            st.error(f"خطأ: {e}")
+            break
+            
