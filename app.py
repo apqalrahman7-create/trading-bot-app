@@ -1,64 +1,92 @@
-import streamlit as st
-from pymexc import spot
-from llama_cpp import Llama  # مكتبة الذكاء الاصطناعي أوفلاين
+import ccxt
 import time
 
-# 1. إعدادات واجهة Streamlit
-st.set_page_config(page_title="AI Offline Trader", layout="wide")
-st.title("🤖 بوت التداول الذكي (ملف واحد - أوفلاين)")
+# --- إعدادات الحساب ---
+API_KEY = 'ضع_هنا_الـ_ACCESS_KEY'
+SECRET_KEY = 'ضع_هنا_الـ_SECRET_KEY'
 
-# 2. تحميل الذكاء الاصطناعي (يتم مرة واحدة فقط لتوفير الذاكرة)
-@st.cache_resource
-def load_ai():
-    # استبدل 'model.gguf' باسم ملف النموذج الذي حملته على جهازك
-    return Llama(model_path="model.gguf", n_ctx=2048)
+# الربط مع منصة MEXC
+exchange = ccxt.mexc({
+    'apiKey': API_KEY,
+    'secret': SECRET_KEY,
+    'enableRateLimit': True,
+})
 
-ai_model = load_ai()
+# --- إعدادات التداول ---
+TARGET_PROFIT = 0.10  # هدف الربح 10%
+STOP_LOSS = 0.05      # وقف الخسارة 5% لحماية رصيدك
+ORDER_AMOUNT_USDT = 12 # مبلغ الدخول في الصفقة (أكبر من حد المنصة الأدنى)
 
-# 3. القائمة الجانبية للإعدادات
-with st.sidebar:
-    st.header("⚙️ الإعدادات")
-    api_key = st.text_input("MEXC API Key", type="password")
-    secret_key = st.text_input("MEXC Secret Key", type="password")
-    symbol = st.text_input("العملة", value="BTCUSDT")
-    trade_amount = st.number_input("مبلغ الدخول ($)", value=10)
-    is_running = st.button("🚀 بدء التداول الآلي")
+def get_all_usdt_symbols():
+    """جلب جميع العملات المتاحة للتداول مقابل USDT"""
+    exchange.load_markets()
+    return [symbol for symbol in exchange.symbols if '/USDT' in symbol and ':USDT' not in symbol]
 
-# 4. دالة اتخاذ القرار عبر الذكاء الاصطناعي
-def ai_decision(price):
-    prompt = f"السعر الحالي لعملة {symbol} هو {price}. هل تنصح بالشراء أم الانتظار؟ أجب بكلمة واحدة فقط: BUY أو WAIT."
-    response = ai_model(f"Q: {prompt} A:", max_tokens=10)
-    return response["choices"][0]["text"].strip().upper()
+def scan_for_opportunity():
+    """البحث عن عملة صعدت بنسبة 2% في آخر ساعة كإشارة دخول"""
+    symbols = get_all_usdt_symbols()
+    print(f"جاري فحص {len(symbols)} عملة في MEXC...")
+    
+    for symbol in symbols:
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            change = ticker['percentage'] # نسبة التغير في 24 ساعة
+            
+            # استراتيجية بسيطة: إذا صعدت العملة بين 2% و 5% الآن (بداية صعود)
+            if 2.0 <= change <= 5.0:
+                print(f"✅ فرصة مكتشفة في {symbol} | نسبة الصعود: {change}%")
+                return symbol
+        except:
+            continue
+    return None
 
-# 5. منطق التشغيل
-if is_running:
-    if not api_key or not secret_key:
-        st.error("يرجى إدخال مفاتيح الـ API أولاً!")
-    else:
-        client = spot.HTTP(api_key=api_key, api_secret=secret_key)
-        st.success("البوت يعمل الآن...")
-        
-        status_box = st.empty()
-        log_box = st.empty()
-        
-        while True:
-            try:
-                # جلب السعر
-                ticker = client.ticker_price(symbol)
-                current_price = float(ticker['price'])
+def trade():
+    print("🚀 البوت بدأ العمل للبحث عن ربح 10%...")
+    
+    while True:
+        try:
+            # 1. البحث عن فرصة
+            symbol = scan_for_opportunity()
+            
+            if symbol:
+                # 2. تنفيذ أمر شراء بسعر السوق
+                print(f"🛒 محاولة شراء {symbol} بمبلغ {ORDER_AMOUNT_USDT} USDT...")
+                order = exchange.create_market_buy_order(symbol, ORDER_AMOUNT_USDT)
+                buy_price = order['price'] if order['price'] else exchange.fetch_ticker(symbol)['last']
                 
-                # استشارة الذكاء الاصطناعي
-                decision = ai_decision(current_price)
-                
-                status_box.metric("السعر الحالي", f"${current_price}", delta=decision)
-                
-                if "BUY" in decision:
-                    log_box.write("✅ ذكاء اصطناعي: تم إرسال أمر شراء...")
-                    # كود الشراء الحقيقي (مفعل):
-                    # client.new_order(symbol=symbol, side="BUY", type="MARKET", quoteOrderQty=trade_amount)
-                
-                time.sleep(10) # فحص كل 10 ثوانٍ
-            except Exception as e:
-                st.error(f"خطأ: {e}")
-                break
-                
+                print(f"💰 تم الشراء بسعر: {buy_price}")
+
+                # 3. حساب أهداف البيع
+                take_profit_price = buy_price * (1 + TARGET_PROFIT)
+                stop_loss_price = buy_price * (1 - STOP_LOSS)
+
+                # 4. مراقبة الصفقة للبيع عند ربح 10%
+                while True:
+                    current_ticker = exchange.fetch_ticker(symbol)
+                    current_price = current_ticker['last']
+                    
+                    print(f"📊 {symbol} | السعر الحالي: {current_price} | الهدف: {take_profit_price:.4f}", end='\r')
+
+                    if current_price >= take_profit_price:
+                        print(f"\n🎉 تم الوصول لهدف 10%! جاري البيع...")
+                        exchange.create_market_sell_order(symbol, order['amount'])
+                        break
+                    
+                    if current_price <= stop_loss_price:
+                        print(f"\n📉 ضرب وقف الخسارة. جاري الخروج...")
+                        exchange.create_market_sell_order(symbol, order['amount'])
+                        break
+                    
+                    time.sleep(10) # فحص السعر كل 10 ثواني
+            
+            else:
+                print("😴 لا توجد فرص حالياً، سأعيد الفحص بعد دقيقة...")
+                time.sleep(60)
+
+        except Exception as e:
+            print(f"⚠️ حدث خطأ: {e}")
+            time.sleep(30)
+
+if __name__ == "__main__":
+    trade()
+    
