@@ -5,83 +5,112 @@ import time
 from datetime import datetime, timedelta
 
 # --- الإعدادات الفنية ---
-PROFIT_GOAL_PCT = 0.10  # الهدف 10% (5$)
-TRADE_AMOUNT = 12.0     # الدخول بـ 12$ في كل صفقة
-TAKE_PROFIT = 1.015     # جني ربح سريع عند 1.5% (لضمان كثرة الصفقات)
-STOP_LOSS = 0.985       # إيقاف خسارة عند 1.5% لحماية الـ 50$
-CYCLE_HOURS = 12        # مدة الدورة
+PROFIT_GOAL_USD = 5.0   # الهدف (10% من الـ 50$)
+TRADE_AMOUNT = 12.0     # مبلغ الصفقة الواحدة
+TAKE_PROFIT = 1.015     # هدف الربح 1.5%
+STOP_LOSS = 0.985       # إيقاف الخسارة 1.5%
 
-st.title("⏱️ MEXC 12h Profit Sniper")
+st.set_page_config(page_title="AI Sniper 12h", page_icon="⚡")
+st.title("⚡ AI Sniper - دورة الـ 12 ساعة")
 
-# تهيئة الجلسة
-if 'start_time' not in st.session_state:
-    st.session_state.start_time = datetime.now()
+# إدارة حالة التشغيل
+if 'running' not in st.session_state:
+    st.session_state.running = False
 if 'total_profit' not in st.session_state:
     st.session_state.total_profit = 0.0
 
-# الربط بالمنصة
+# القائمة الجانبية للإعدادات
+st.sidebar.header("🔑 إعدادات الوصول")
 api_key = st.sidebar.text_input("API Key", type="password")
 api_secret = st.sidebar.text_input("Secret Key", type="password")
 
-def get_mexc():
-    return ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True})
+# أزرار التحكم
+col1, col2 = st.sidebar.columns(2)
+if col1.button("🚀 تشغيل", use_container_width=True):
+    st.session_state.running = True
+if col2.button("🛑 إيقاف", use_container_width=True):
+    st.session_state.running = False
 
-if st.sidebar.button("ابدأ دورة الـ 12 ساعة"):
-    ex = get_mexc()
-    st.session_state.start_time = datetime.now()
-    end_time = st.session_state.start_time + timedelta(hours=CYCLE_HOURS)
-    
-    st.info(f"بدأت الدورة. تنتهي الساعة: {end_time.strftime('%H:%M:%S')}")
-    
-    # جلب العملات النشطة فقط (حجم تداول عالي)
-    markets = ex.load_markets()
-    symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
-    
-    while datetime.now() < end_time:
-        # حساب الوقت المتبقي
-        remaining = end_time - datetime.now()
-        st.sidebar.metric("الوقت المتبقي", str(remaining).split('.')[0])
-        st.sidebar.metric("الأرباح المحققة", f"${st.session_state.total_profit:.2f}")
+# منطقة العرض الرئيسية
+status_placeholder = st.empty()
+metrics_col1, metrics_col2 = st.columns(2)
+log_area = st.container()
 
-        for symbol in symbols:
-            try:
-                # 1. تحليل سريع (قوة نسبية)
-                ticker = ex.fetch_ticker(symbol)
-                # فحص العملات التي بدأت تتحرك (تذبذب)
-                if ticker['percentage'] > 1: # العملات الصاعدة فقط
-                    ohlcv = ex.fetch_ohlcv(symbol, '1m', limit=5)
-                    df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+if st.session_state.running:
+    if not api_key or not api_secret:
+        st.error("الرجاء إدخال الـ API Keys في القائمة الجانبية!")
+        st.session_state.running = False
+    else:
+        try:
+            ex = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True})
+            markets = ex.load_markets()
+            # جلب أزواج USDT النشطة فقط
+            symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
+            
+            start_time = datetime.now()
+            end_time = start_time + timedelta(hours=12)
+
+            while st.session_state.running:
+                # 1. تحديث المؤشرات
+                time_left = end_time - datetime.now()
+                if time_left.total_seconds() <= 0:
+                    st.success("✅ انتهت دورة الـ 12 ساعة!")
+                    st.session_state.running = False
+                    break
+
+                metrics_col1.metric("الربح المحقق", f"${st.session_state.total_profit:.2f}")
+                metrics_col2.metric("الوقت المتبقي", str(time_left).split('.')[0])
+
+                # 2. البحث عن صفقات (مسح سريع)
+                for symbol in symbols:
+                    if not st.session_state.running: break
                     
-                    # شرط الشراء: ارتداد بسيط بعد صعود
-                    if df['c'].iloc[-1] > df['c'].mean():
-                        price = ticker['last']
-                        amount = TRADE_AMOUNT / price
-                        
-                        st.write(f"🎯 قنص سريع: {symbol}")
-                        order = ex.create_market_buy_order(symbol, ex.amount_to_precision(symbol, amount))
-                        
-                        # --- مراقبة اللحظة (بيع فوري) ---
-                        while True:
-                            live_price = ex.fetch_ticker(symbol)['last']
-                            if live_price >= price * TAKE_PROFIT:
-                                bal = ex.fetch_balance()[symbol.split('/')]['free']
-                                ex.create_market_sell_order(symbol, ex.amount_to_precision(symbol, bal))
-                                profit = (live_price - price) * amount
-                                st.session_state.total_profit += profit
-                                st.success(f"💰 ربح سريع من {symbol}: +${profit:.2f}")
+                    try:
+                        ticker = ex.fetch_ticker(symbol)
+                        # استراتيجية: قنص العملات التي بدأت تتحرك بقوة صعودية
+                        if ticker['percentage'] > 2.0: 
+                            status_placeholder.info(f"🔍 فحص فرصة في {symbol}...")
+                            
+                            price = ticker['last']
+                            amount = TRADE_AMOUNT / price
+                            p_amount = ex.amount_to_precision(symbol, amount)
+                            
+                            # تنفيذ الشراء
+                            order = ex.create_market_buy_order(symbol, p_amount)
+                            with log_area:
+                                st.write(f"🎯 تم شراء {symbol} بسعر {price}")
+                            
+                            # مراقبة الصفقة (Loop داخلي سريع للبيع)
+                            while True:
+                                curr = ex.fetch_ticker(symbol)['last']
+                                if curr >= price * TAKE_PROFIT:
+                                    # بيع بربح
+                                    bal = ex.fetch_balance()[symbol.split('/')]['free']
+                                    ex.create_market_sell_order(symbol, ex.amount_to_precision(symbol, bal))
+                                    st.session_state.total_profit += (curr - price) * amount
+                                    st.toast(f"✅ ربح من {symbol}!")
+                                    break
+                                elif curr <= price * STOP_LOSS:
+                                    # بيع بخسارة
+                                    bal = ex.fetch_balance()[symbol.split('/')]['free']
+                                    ex.create_market_sell_order(symbol, ex.amount_to_precision(symbol, bal))
+                                    st.session_state.total_profit -= (price - curr) * amount
+                                    break
+                                time.sleep(1)
+                            
+                            if st.session_state.total_profit >= PROFIT_GOAL_USD:
+                                st.balloons()
+                                st.session_state.running = False
                                 break
-                            elif live_price <= price * STOP_LOSS:
-                                bal = ex.fetch_balance()[symbol.split('/')]['free']
-                                ex.create_market_sell_order(symbol, ex.amount_to_precision(symbol, bal))
-                                st.error(f"⚠️ إيقاف خسارة في {symbol}")
-                                break
-                            time.sleep(1)
-            except: continue
-        
-        if st.session_state.total_profit >= 5.0:
-            st.balloons()
-            st.success("✅ مبروك! حققت هدف الـ 10% قبل نهاية الـ 12 ساعة.")
-            break
-        
-        time.sleep(10)
-        
+                    except:
+                        continue
+                
+                time.sleep(5) # راحة بين دورات المسح
+
+        except Exception as e:
+            st.error(f"❌ خطأ: {e}")
+            st.session_state.running = False
+
+else:
+    status_placeholder.warning("⚠️ البوت متوقف حالياً. اضغط 'تشغيل' للبدء.")
+    
