@@ -4,13 +4,12 @@ import time
 import ccxt
 
 st.set_page_config(page_title="MEXC Force Sniper", layout="centered")
-st.title("🛡️ MEXC Active Sniper (Force Execute)")
+st.title("⚡ AI Sniper - Instant Execution Mode")
 
 if 'bot_active' not in st.session_state:
     st.session_state.bot_active = False
 
 def trading_engine(api_key, api_secret):
-    # إعداد الاتصال مع تجاوز القيود الجغرافية
     exchange = ccxt.mexc({
         'apiKey': api_key,
         'secret': api_secret,
@@ -20,55 +19,62 @@ def trading_engine(api_key, api_secret):
 
     while st.session_state.get('bot_active', False):
         try:
-            # 1. فحص الرصيد الحقيقي
+            # 1. فحص الرصيد المتاح
             balance = exchange.fetch_balance()
             free_usdt = balance['free'].get('USDT', 0)
             
-            if free_usdt < 10:
-                st.sidebar.error(f"رصيد USDT غير كافٍ: {free_usdt}")
+            if free_usdt < 5: # الحد الأدنى في MEXC
+                st.toast("⚠️ رصيد USDT غير كافٍ للبدء")
                 time.sleep(30)
                 continue
 
-            # 2. البحث السريع جداً عن أي حركة
+            # 2. جلب كافة العملات وترتيبها حسب الأعلى صعوداً (Top Gainers)
             tickers = exchange.fetch_tickers()
-            # نبحث عن أكثر العملات نشاطاً الآن
-            for symbol, ticker in tickers.items():
-                if '/USDT' in symbol and ticker['percentage'] > 0.1:
-                    # تنفيذ شراء فوري
-                    price = ticker['last']
-                    amount = (free_usdt * 0.95) / price # استخدام 95% من الرصيد
+            # فلترة العملات الصالحة مقابل USDT
+            valid_pairs = {k: v for k, v in tickers.items() if '/USDT' in k and v['percentage'] is not None}
+            # ترتيبها لاختيار الأكثر نشاطاً (Momentum)
+            sorted_pairs = sorted(valid_pairs.items(), key=lambda x: x[1]['percentage'], reverse=True)
+
+            if sorted_pairs:
+                target_symbol = sorted_pairs[0][0] # اختيار العملة رقم 1 في السوق الآن
+                price = sorted_pairs[0][1]['last']
+                
+                # تنفيذ الشراء فوراً (Instant Market Buy)
+                amount = (free_usdt * 0.98) / price # استخدام 98% لضمان تغطية الرسوم
+                
+                st.toast(f"🎯 تنفيذ شراء فوري: {target_symbol}")
+                exchange.create_market_buy_order(target_symbol, amount)
+                
+                # 3. مراقبة الربح التراكمي (هدف 10% أو حماية من الانعكاس)
+                entry_price = price
+                while st.session_state.get('bot_active', False):
+                    curr_ticker = exchange.fetch_ticker(target_symbol)
+                    curr_profit = ((curr_ticker['last'] - entry_price) / entry_price) * 100
                     
-                    st.toast(f"🎯 محاولة شراء {symbol}...")
-                    order = exchange.create_market_buy_order(symbol, amount)
+                    # عرض الحالة للمستخدم
+                    st.write(f"📈 {target_symbol} Profit: {curr_profit:.2f}%")
                     
-                    # 3. مراقبة الـ 12 ساعة لتحقيق الـ 10%
-                    start_price = price
-                    while True:
-                        curr_ticker = exchange.fetch_ticker(symbol)
-                        curr_profit = ((curr_ticker['last'] - start_price) / start_price) * 100
-                        
-                        if curr_profit >= 10.0 or curr_profit <= -0.5:
-                            exchange.create_market_sell_order(symbol, amount)
-                            st.success(f"✅ تم الإغلاق بربح: {curr_profit}%")
-                            break
-                        time.sleep(10)
-                    break 
+                    if curr_profit >= 10.0 or curr_profit <= -0.5:
+                        exchange.create_market_sell_order(target_symbol, amount)
+                        st.success(f"✅ تم الإغلاق. الربح المضاف للمحفظة: {curr_profit:.2f}%")
+                        break
+                    time.sleep(5) # فحص سريع جداً
 
             time.sleep(5)
         except Exception as e:
-            st.sidebar.warning(f"تنبيه: {str(e)}")
-            time.sleep(10)
+            st.error(f"Execution Error: {e}")
+            time.sleep(20)
 
-# --- الواجهة ---
+# --- UI ---
 with st.sidebar:
-    k = st.text_input("API Key", type="password", key="m_key")
-    s = st.text_input("Secret Key", type="password", key="m_secret")
+    k = st.text_input("MEXC API Key", type="password")
+    s = st.text_input("MEXC Secret Key", type="password")
 
-if st.button("🚀 تشغيل القناص الآن", type="primary"):
+if st.button("🚀 تشغيل القناص (تنفيذ فوري)", type="primary", use_container_width=True):
     if k and s:
         st.session_state.bot_active = True
         threading.Thread(target=trading_engine, args=(k, s), daemon=True).start()
-        st.success("بدأ البحث... راقب التنبيهات الجانبية")
+        st.success("البوت بدأ العمل... سيتم فتح صفقة على أقوى عملة في السوق حالاً.")
 
 if st.button("🛑 إيقاف"):
     st.session_state.bot_active = False
