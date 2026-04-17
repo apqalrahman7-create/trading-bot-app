@@ -9,83 +9,72 @@ class TradingBot:
             'secret': secret_key,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',
-                'adjustForTimeDifference': True 
+                'defaultType': 'swap', # للبحث في العقود الآجلة
+                'adjustForTimeDifference': True # حل مشكلة توقيت السيرفر
             }
         })
         self.is_running = False
-        self.leverage = 10 # رافعة مالية افتراضية
+        self.leverage = 10
 
     def get_total_balance(self):
-        """جلب الرصيد الحقيقي من MEXC وإصلاح مشكلة الـ 0.00"""
+        """كود إجباري لجلب الرصيد الحقيقي من MEXC"""
         try:
+            # 1. محاولة جلب رصيد العقود الآجلة
             balance = self.exchange.fetch_balance({'type': 'swap'})
-            # محاولة قراءة الرصيد من أكثر من مفتاح (total أو free أو info)
-            usdt_bal = balance.get('USDT', {}).get('total', 0)
-            if usdt_bal == 0:
-                usdt_bal = balance.get('total', {}).get('USDT', 0)
-            return float(usdt_bal)
+            res = float(balance.get('total', {}).get('USDT', 0))
+            
+            # 2. إذا كان صفراً، ابحث في السبوت (Spot) تلقائياً
+            if res == 0:
+                spot_bal = self.exchange.fetch_balance({'type': 'spot'})
+                res = float(spot_bal.get('total', {}).get('USDT', 0))
+                
+            return res
         except Exception as e:
-            print(f"Error fetching balance: {e}")
+            print(f"Error connecting to MEXC: {e}")
             return 0.0
-
-    def close_all_positions(self, symbols):
-        """إغلاق كافة الصفقات المفتوحة وإعادة الرصيد للمحفظة"""
-        for symbol in symbols:
-            try:
-                positions = self.exchange.fetch_positions([symbol])
-                for pos in positions:
-                    size = float(pos['contracts'])
-                    if size != 0:
-                        side = 'sell' if size > 0 else 'buy'
-                        self.exchange.create_order(symbol, 'market', side, abs(size), params={'reduceOnly': True})
-            except: pass
 
     def run_automated_logic(self, balance):
         self.is_running = True
         initial_balance = balance
         target_profit = initial_balance * 1.10 # هدف 10%
         
-        yield f"🚀 بدأت الجلسة الذكية! الرصيد: ${initial_balance:.2f} | الهدف: ${target_profit:.2f}"
+        yield f"🚀 انطلق البوت! الرصيد المكتشف: ${initial_balance:.2f}"
         
-        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT']
         
         while self.is_running:
-            current_balance = self.get_total_balance()
+            # تحديث الرصيد الحالي
+            current_bal = self.get_total_balance()
             
-            # 1. فحص الوصول للهدف (10% ربح)
-            if current_balance >= target_profit:
-                yield f"💰 تم تحقيق الهدف بنجاح! الرصيد الحالي: ${current_balance:.2f}"
-                self.close_all_positions(symbols)
+            # فحص تحقيق الهدف (10% ربح)
+            if current_bal >= target_profit:
+                yield "✅ تم تحقيق ربح 10%! جاري إغلاق الجلسة."
                 self.is_running = False
                 break
-            
-            for symbol in symbols:
-                if not self.is_running: break
                 
+            for symbol in symbols:
                 try:
-                    # تحليل فني (EMA)
+                    # تحليل السوق
                     bars = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=20)
                     df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
                     ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
                     price = df['c'].iloc[-1]
 
-                    # تحديد كمية الصفقة (تقسيم رأس المال: استخدام 10% من المحفظة)
-                    trade_amount_usdt = current_balance * 0.1
-                    qty = (trade_amount_usdt * self.leverage) / price
+                    # حساب كمية الصفقة بدقة (تجنب خطأ InvalidOrder)
+                    qty = (current_bal * self.leverage * 0.9) / price
                     precise_qty = float(self.exchange.amount_to_precision(symbol, qty))
 
-                    # 2. تنفيذ التداول التلقائي الذكي
+                    # تنفيذ التداول الحقيقي
                     if price > ema:
-                        yield f"📈 إشارة شراء (Long) على {symbol}..."
+                        yield f"📈 شراء (Long) على {symbol}.."
                         self.exchange.create_market_buy_order(symbol, precise_qty)
                     elif price < ema:
-                        yield f"📉 إشارة بيع (Short) على {symbol}..."
+                        yield f"📉 بيع (Short) على {symbol}.."
                         self.exchange.create_market_sell_order(symbol, precise_qty)
-
+                        
                 except Exception as e:
-                    yield f"⚠️ تنبيه في {symbol}: {str(e)}"
-                
+                    yield f"⚠️ تنبيه: {str(e)}"
                 time.sleep(2)
             
-            time.sleep(15) # انتظار بين دورات المسح
+            time.sleep(15)
+            
