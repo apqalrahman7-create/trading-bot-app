@@ -8,69 +8,66 @@ class TradingBot:
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {
-                'defaultType': 'spot',  # التركيز على محفظة الفوري (Spot)
-                'adjustForTimeDifference': True
-            }
+            'options': {'adjustForTimeDifference': True} 
         })
         self.is_running = False
 
     def get_total_balance(self):
-        """جلب رصيد الـ USDT المتاح في محفظة الفوري"""
+        """Standardized function to fetch balance from Spot and Futures"""
         try:
-            balance = self.exchange.fetch_balance({'type': 'spot'})
-            # جلب الرصيد المتاح للتداول (Free Balance)
-            usdt_free = float(balance.get('free', {}).get('USDT', 0))
-            return usdt_free
-        except Exception as e:
-            print(f"Error fetching spot balance: {e}")
+            # 1. Fetch Spot Balance
+            spot_bal = self.exchange.fetch_balance({'type': 'spot'})
+            s_usdt = float(spot_bal.get('total', {}).get('USDT', 0))
+            
+            # 2. Fetch Futures Balance (Swap)
+            swap_bal = self.exchange.fetch_balance({'type': 'swap'})
+            f_usdt = float(swap_bal.get('total', {}).get('USDT', 0))
+            
+            # Return the one that has money (Priority to Spot as per user)
+            return s_usdt if s_usdt >= 5 else f_usdt
+        except:
             return 0.0
 
     def run_automated_logic(self, balance):
         self.is_running = True
         initial_bal = balance
-        target = initial_bal * 1.10  # هدف الربح 10%
-        symbol = 'BTC/USDT'  # رمز التداول الفوري
+        target = initial_bal * 1.10
         
-        yield f"🚀 Spot Session Started! Balance: ${initial_bal:.2f} | Target: ${target:.2f}"
+        # Decide Market Type automatically
+        spot_val = self.get_total_balance()
+        market_type = 'spot' if spot_val >= 5 else 'swap'
+        symbol = 'BTC/USDT' if market_type == 'spot' else 'BTC/USDT:USDT'
+        
+        yield f"🚀 Logic Started on {market_type.upper()}! Target: ${target:.2f}"
         
         while self.is_running:
             try:
                 curr_bal = self.get_total_balance()
-                profit = curr_bal - initial_bal
-                yield f"💰 Current Balance: ${curr_bal:.2f} | Net Profit: ${profit:.2f}"
+                yield f"💰 Balance: ${curr_bal:.2f} | Profit: ${curr_bal - initial_bal:.2f}"
 
                 if curr_bal >= target:
-                    yield "✅ 10% Profit Achieved in Spot! Closing session."
+                    yield "✅ Target Reached! Closing session."
                     self.is_running = False ; break
 
-                # تحليل الاتجاه (EMA)
-                bars = self.exchange.fetch_ohlcv(symbol, timeframe='1m', limit=20)
+                # Technical Analysis
+                bars = self.exchange.fetch_ohlcv(symbol.replace(':USDT',''), timeframe='1m', limit=15)
                 df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
                 ema = df['c'].ewm(span=10, adjust=False).mean().iloc[-1]
                 price = df['c'].iloc[-1]
 
-                # في التداول الفوري (Spot)، نشتري فقط عندما يكون السعر صاعداً
+                # Execution
+                qty = (curr_bal * 0.95) / price
+                precise_qty = self.exchange.amount_to_precision(symbol, qty)
+                params = {'type': market_type}
+
                 if price > ema:
-                    # حساب الكمية (استخدام 95% من الرصيد المتاح لترك هامش للرسوم)
-                    amount_usdt = curr_bal * 0.95
-                    qty = amount_usdt / price
-                    precise_qty = self.exchange.amount_to_precision(symbol, qty)
-                    
-                    yield f"📈 Bullish Signal! Executing BUY on {symbol}"
-                    self.exchange.create_market_buy_order(symbol, precise_qty)
-                
+                    yield f"📈 BUY Signal on {symbol}"
+                    self.exchange.create_market_buy_order(symbol, precise_qty, params)
                 elif price < ema:
-                    # فحص إذا كان لدينا عملات (BTC) لبيعها وجني الأرباح
-                    bal_data = self.exchange.fetch_balance({'type': 'spot'})
-                    btc_qty = float(bal_data.get('free', {}).get('BTC', 0))
-                    
-                    if btc_qty > 0.0001:
-                        yield f"📉 Price below EMA. Selling BTC to secure profit."
-                        self.exchange.create_market_sell_order(symbol, btc_qty)
+                    yield f"📉 SELL Signal on {symbol}"
+                    self.exchange.create_market_sell_order(symbol, precise_qty, params)
 
             except Exception as e:
                 yield f"⚠️ Alert: {str(e)}"
-            
             time.sleep(20)
             
