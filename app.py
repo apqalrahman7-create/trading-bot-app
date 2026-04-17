@@ -1,50 +1,88 @@
 import streamlit as st
-import ccxt
+from bot_engine import TradingBot
 import time
 
-st.set_page_config(page_title="MEXC AI BOT", layout="wide")
+# --- 1. Page Configuration ---
+st.set_page_config(
+    page_title="AI Trading Control Center",
+    page_icon="🤖",
+    layout="wide"
+)
 
-class TradingBot:
-    def __init__(self, api, secret):
-        self.exchange = ccxt.mexc({
-            'apiKey': api, 'secret': secret,
-            'enableRateLimit': True,
-            'options': {'adjustForTimeDifference': True}
-        })
+# Application Header
+st.title("🤖 AI Trading Bot Control Panel (MEXC)")
+st.markdown("---")
 
-    def get_total_balance(self):
-        try:
-            # جلب الرصيد من السبوت والفيوتشر معاً
-            spot = self.exchange.fetch_balance({'type': 'spot'})
-            futures = self.exchange.fetch_balance({'type': 'swap'})
-            
-            spot_usdt = float(spot.get('total', {}).get('USDT', 0))
-            futures_usdt = float(futures.get('total', {}).get('USDT', 0))
-            
-            return spot_usdt, futures_usdt
-        except: return 0.0, 0.0
-
-st.title("🤖 MEXC Smart Trader")
-
+# --- 2. Sidebar Configuration (API Keys) ---
 with st.sidebar:
-    api = st.text_input("API Key", type="password")
-    sec = st.text_input("Secret Key", type="password")
+    st.header("🔐 Connection Settings")
+    st.write("Enter your MEXC API credentials:")
+    api_key = st.text_input("Access Key (API Key)", type="password")
+    secret_key = st.text_input("Secret Key", type="password")
+    
+    st.divider()
+    st.info("Note: The bot will trade in the wallet where funds (USDT) are available.")
 
-if api and sec:
-    bot = TradingBot(api, sec)
-    spot_bal, futures_bal = bot.get_total_balance()
-    total = spot_bal + futures_bal
+# --- 3. Main Dashboard Logic ---
+if api_key and secret_key:
+    # Initialize the trading engine
+    bot = TradingBot('mexc', api_key, secret_key)
+    
+    # Fetch real-time balance from the bot engine
+    current_balance = bot.get_total_balance()
+    
+    # Display Balance Metrics
+    st.subheader("💰 Live Portfolio Status")
+    col_bal, col_status = st.columns(2)
+    
+    with col_bal:
+        st.metric("Total Real-Time Balance (USDT)", f"${current_balance:.2f}")
+    
+    with col_status:
+        if current_balance > 0:
+            st.success("✅ Connection Active: Balance Found")
+        else:
+            st.warning("⚠️ Connected: Balance is $0.00 (Check Spot/Futures Wallet)")
 
-    st.subheader("💰 إحصائيات المحفظة الحقيقية")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("رصيد السبوت", f"${spot_bal:.2f}")
-    c2.metric("رصيد الفيوتشر", f"${futures_bal:.2f}")
-    c3.metric("إجمالي الرصيد", f"${total:.2f}", delta="USDT")
+    st.markdown("---")
 
-    if total >= 5:
-        if st.button("🚀 ابدأ التداول التلقائي"):
-            st.success("تم تفعيل البوت.. جاري البحث عن صفقات")
-            # (هنا يوضع منطق التداول الحقيقي)
-    else:
-        st.warning(f"⚠️ الرصيد الحالي (${total:.2f}) أقل من الحد الأدنى المطلوب للتداول ($5)")
+    # Bot Control State
+    if 'is_active' not in st.session_state:
+        st.session_state.is_active = False
+
+    # Control Buttons
+    btn_start, btn_stop = st.columns(2)
+    
+    with btn_start:
+        if st.button("🚀 START AUTOMATED TRADING", type="primary", use_container_width=True):
+            if current_balance >= 5: # Minimum exchange requirement
+                st.session_state.is_active = True
+            else:
+                st.error("❌ Error: Insufficient balance ($5 minimum required)")
+
+    with btn_stop:
+        if st.button("🛑 STOP SESSION", use_container_width=True):
+            st.session_state.is_active = False
+            st.warning("Stop command issued to the engine.")
+
+    # --- 4. Live Operation Logs ---
+    if st.session_state.is_active:
+        st.subheader("📊 Live Trading Logs")
+        log_area = st.empty()
         
+        # Start the trading cycle from bot_engine
+        for message in bot.run_automated_logic(current_balance):
+            with log_area.container():
+                st.info(message)
+            
+            # Check for manual stop
+            if not st.session_state.is_active:
+                bot.is_running = False
+                break
+            
+            # Allow for UI refresh
+            time.sleep(1)
+else:
+    # Prompt for credentials
+    st.warning("👈 Please enter your API Keys in the sidebar to activate the control panel.")
+    
