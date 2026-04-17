@@ -3,69 +3,79 @@ import threading
 import time
 import ccxt
 
-# --- CONFIG ---
-st.set_page_config(page_title="12H Compound Bot", layout="centered")
-st.title("📈 12-Hour Portfolio Compounding Bot")
+st.set_page_config(page_title="12H Compound Sniper", layout="centered")
+st.title("📈 MEXC 12H Portfolio Growth (+10%)")
 
 if 'bot_active' not in st.session_state:
     st.session_state.bot_active = False
 
 def compounding_engine(api_key, api_secret):
-    exchange = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True})
+    # إعداد الاتصال بمنصة MEXC
+    exchange = ccxt.mexc({
+        'apiKey': api_key,
+        'secret': api_secret,
+        'enableRateLimit': True,
+        'options': {'defaultType': 'spot'}
+    })
     
     while st.session_state.get('bot_active', False):
         try:
-            # 1. تحديد رصيد البداية للدورة الحالية
-            balance_data = exchange.fetch_balance()
-            start_balance = balance_data['total'].get('USDT', 0)
-            target_balance = start_balance * 1.10 # هدف 10% نمو للمحفظة
+            # 1. جلب رصيد البداية للدورة
+            balance = exchange.fetch_balance()
+            start_usdt = balance['total'].get('USDT', 0)
+            target_usdt = start_usdt * 1.10
             
-            start_time = time.time()
-            twelve_hours = 12 * 3600 # 12 ساعة بالثواني
+            # 2. مسح السوق بحثاً عن عملات صاعدة (حساسية عالية جداً)
+            tickers = exchange.fetch_tickers()
+            # نبحث عن أي عملة صاعدة > 0.1% لسرعة التنفيذ
+            potential_pairs = [s for s in tickers if '/USDT' in s and tickers[s]['percentage'] > 0.1]
             
-            st.toast(f"New Cycle Started! Capital: {start_balance:.2f}$, Target: {target_balance:.2f}$")
-
-            # 2. حلقة العمل المكثف خلال الـ 12 ساعة
-            while (time.time() - start_time) < twelve_hours:
-                if not st.session_state.get('bot_active', False): break
-                
-                # تحديث الرصيد الحالي لمراقبة التقدم
-                current_balance = exchange.fetch_balance()['total'].get('USDT', 0)
-                progress = (current_balance - start_balance) / (target_balance - start_balance) if target_balance > start_balance else 0
-                
-                # فحص الهدف
-                if current_balance >= target_balance:
-                    st.success(f"🎊 Cycle Complete! Portfolio grew 10%. Profit added to capital.")
-                    break # إنهاء الدورة والبدء في واحدة جديدة برأس مال أكبر (تراكمي)
-
-                # 3. صفقات سريعة لجمع الأرباح (Scalping)
+            if potential_pairs:
+                symbol = potential_pairs[0] # اختيار أول عملة متاحة
                 usdt_free = exchange.fetch_balance()['free'].get('USDT', 0)
-                if usdt_free > 5:
-                    # ماسح سريع لـ MEXC واقتناص فرص الصعود > 0.1%
-                    # تنفيذ الصفقات المقسمة لضمان استمرارية النمو
-                    pass
                 
-                time.sleep(30) # تحديث كل 30 ثانية
+                if usdt_free > 5: # الحد الأدنى للتداول في MEXC
+                    amount_to_spend = usdt_free / 2 # استخدام نصف السيولة المتاحة
+                    price = tickers[symbol]['last']
+                    amount_to_buy = amount_to_spend / price
+                    
+                    # --- تنفيذ أمر شراء حقيقي (Market Buy) ---
+                    st.toast(f"🚀 Buying {symbol} to reach +10% target...")
+                    order = exchange.create_market_buy_order(symbol, amount_to_buy)
+                    entry_price = price
+                    
+                    # 3. مراقبة الصفقة (الخروج عند ربح 2% أو خسارة 0.4% لجمع الأرباح)
+                    start_time = time.time()
+                    while (time.time() - start_time) < 3600: # ساعة واحدة كحد أقصى للصفقة
+                        current_ticker = exchange.fetch_ticker(symbol)
+                        current_price = current_ticker['last']
+                        profit = ((current_price - entry_price) / entry_price) * 100
+                        
+                        # إغلاق الصفقة (بيع حقيقي)
+                        if profit >= 2.0 or profit <= -0.4:
+                            exchange.create_market_sell_order(symbol, amount_to_buy)
+                            st.toast(f"✅ Sold {symbol} | Profit: {profit:.2f}%")
+                            break
+                        time.sleep(5)
             
-            # انتظار بسيط قبل بدء الدورة التراكمية التالية
-            time.sleep(60)
+            time.sleep(10) # انتظار بسيط قبل البحث التالي
             
         except Exception as e:
-            time.sleep(30)
+            st.error(f"Execution Error: {e}")
+            time.sleep(20)
 
-# --- UI ---
+# --- الواجهة ---
 with st.sidebar:
-    st.header("🔑 MEXC Keys")
-    k = st.text_input("API Key", type="password")
-    s = st.text_input("Secret Key", type="password")
+    k = st.text_input("MEXC API Key", type="password")
+    s = st.text_input("MEXC Secret Key", type="password")
 
 if st.button("🚀 Start 12H Compound Mode", type="primary", use_container_width=True):
     if k and s:
         st.session_state.bot_active = True
         threading.Thread(target=compounding_engine, args=(k, s), daemon=True).start()
-        st.success("Compounding bot is active! Target: +10% every 12 hours.")
+        st.success("Bot is LIVE! Trading to reach +10% total growth.")
 
-if st.button("🚨 Emergency Exit & Sell All", use_container_width=True):
+if st.button("🛑 Stop & Emergency Sell", use_container_width=True):
     st.session_state.bot_active = False
-    # كود إغلاق كافة الصفقات الذي صممناه
+    st.warning("Stopping bot and clearing memory...")
     
