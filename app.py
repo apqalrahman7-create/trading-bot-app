@@ -1,102 +1,87 @@
 import streamlit as st
 import ccxt
 import time
-from datetime import datetime, timedelta
-import pandas as pd
+from datetime import datetime
 
-# --- إعدادات القناص الزمني ---
+# --- إعدادات النظام المحدثة ---
 LEVERAGE = 5
-MAX_TRADES = 5       # فتح 5 صفقات في أماكن مختلفة
-TP_TARGET = 0.05    # هدف الربح 5%
-SL_TARGET = -0.02   # وقف خسارة 2% لحماية الحساب
-MAX_TIME_MINS = 60  # الحد الأقصى لعمر الصفقة (ساعة)
+MAX_TRADES = 5
+TP_TARGET = 0.05
+MAX_TIME_MINS = 60
+ENTRY_USD = 20.0  # المبلغ المطلوب لكل صفقة
 
-st.set_page_config(page_title="القناص الزمني Pro", layout="wide")
-st.title("⏱️ بوت القناص الزمني (هدف 5% | حد 60 دقيقة)")
+st.set_page_config(page_title="القناص الذكي - إدارة السيولة", layout="wide")
+st.title("⏱️ بوت القناص (نظام انتظار السيولة 3 دقائق)")
 
 if 'running' not in st.session_state: st.session_state.running = False
 if 'positions' not in st.session_state: st.session_state.positions = {}
 
-# --- إدارة الواجهة ---
+# --- التحكم ---
 api_key = st.sidebar.text_input("API Key", type="password")
 api_secret = st.sidebar.text_input("Secret Key", type="password")
 
-if st.sidebar.button("🚀 تشغيل النظام"):
-    if api_key and api_secret: st.session_state.running = True
-if st.sidebar.button("🛑 إيقاف وتصفية شاملة"):
-    st.session_state.running = False
+if st.sidebar.button("🚀 تشغيل"): st.session_state.running = True
+if st.sidebar.button("🛑 إيقاف"): st.session_state.running = False
 
 # --- المحرك الرئيسي ---
 if st.session_state.running:
     try:
         ex = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'swap'}})
-        
+        ex.load_markets()
+
         while st.session_state.running:
-            # 1. المراقبة اللحظية (إغلاق بناءً على الربح أو الزمن)
+            # 1. مراقبة وإغلاق الصفقات (لتحرير رأس المال)
             for sym, data in list(st.session_state.positions.items()):
                 t = ex.fetch_ticker(sym)
                 pnl = (t['last'] - data['entry']) / data['entry'] if data['side'] == 'buy' else (data['entry'] - t['last']) / data['entry']
+                mins = (datetime.now() - data['start_time']).total_seconds() / 60
                 
-                # حساب الوقت المنقضي
-                time_elapsed = datetime.now() - data['start_time']
-                minutes_passed = time_elapsed.total_seconds() / 60
-                
-                exit_now, reason = False, ""
-                
-                if pnl >= TP_TARGET:
-                    exit_now, reason = True, f"✅ تم صيد الهدف (5%) في {sym}"
-                elif pnl <= SL_TARGET:
-                    exit_now, reason = True, f"🛑 وقف خسارة حماية في {sym}"
-                elif minutes_passed >= MAX_TIME_MINS:
-                    exit_now, reason = True, f"⏱️ انتهاء الوقت (ساعة) في {sym}"
-
-                if exit_now:
-                    p_type = 2 if data['side'] == 'buy' else 1
-                    ex.create_market_order(sym, 'sell' if data['side'] == 'buy' else 'buy', data['amount'], params={'openType': 2, 'positionType': p_type})
+                if pnl >= TP_TARGET or mins >= MAX_TIME_MINS:
+                    side_close = 'sell' if data['side'] == 'buy' else 'buy'
+                    ex.create_market_order(sym, side_close, data['amount'], params={'openType': 2, 'positionType': 1 if data['side'] == 'sell' else 2})
                     del st.session_state.positions[sym]
-                    st.toast(reason)
+                    st.success(f"🔓 تم تحرير رأس المال بإغلاق {sym}")
 
-            # 2. البحث عن فرص جديدة (تعدد الأماكن)
-            if len(st.session_state.positions) < MAX_TRADES:
-                # مسح أفضل العملات مقابل USDT
+            # 2. فحص السيولة المتاحة قبل فتح صفقات جديدة
+            balance = ex.fetch_balance()
+            free_usdt = balance['free'].get('USDT', 0)
+            
+            if free_usdt < ENTRY_USD and len(st.session_state.positions) >= MAX_TRADES:
+                st.warning(f"⚠️ رأس المال مشغول بالكامل (المتاح: {free_usdt:.2f} USDT). سأنتظر 3 دقائق...")
+                time.sleep(180) # الانتظار لمدة 3 دقائق كما طلبت
+                st.rerun()
+
+            # 3. فتح صفقات جديدة إذا توفرت السيولة
+            if len(st.session_state.positions) < MAX_TRADES and free_usdt >= ENTRY_USD:
                 tickers = ex.fetch_tickers()
-                active_symbols = [s for s in tickers.keys() if s.endswith('/USDT:USDT')][:30]
+                symbols = [s for s in tickers.keys() if s.endswith('/USDT:USDT') and 'XAUT' not in s][:15]
                 
-                for s in active_symbols:
+                for s in symbols:
                     if s in st.session_state.positions: continue
-                    if len(st.session_state.positions) >= MAX_TRADES: break
+                    t = tickers[s]
                     
-                    # تحليل سريع للدخول (RSI)
-                    bars = ex.fetch_ohlcv(s, timeframe='5m', limit=20)
-                    df = pd.DataFrame(bars, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                    delta = df['c'].diff()
-                    rsi = 100 - (100 / (1 + (delta.where(delta > 0, 0).mean() / -delta.where(delta < 0, 0).mean())))
-                    
-                    side = 'buy' if rsi <= 35 else 'sell' if rsi >= 65 else None
+                    # شرط دخول سريع للتجربة (تغير 0.5%)
+                    side = 'buy' if t['percentage'] < -0.5 else 'sell' if t['percentage'] > 0.5 else None
                     
                     if side:
-                        pos_type = 1 if side == 'buy' else 2
-                        ex.set_leverage(LEVERAGE, s, params={'openType': 2, 'positionType': pos_type})
-                        entry_price = tickers[s]['last']
-                        amt = (10.0 * LEVERAGE) / entry_price # دخول بـ 10$ لكل صفقة
+                        price = t['last']
+                        amt = float(ex.amount_to_precision(s, (ENTRY_USD * LEVERAGE) / price))
                         
-                        ex.create_market_order(s, side, amt, params={'openType': 2, 'positionType': pos_type})
-                        st.session_state.positions[s] = {
-                            'side': side, 'entry': entry_price, 'amount': amt,
-                            'start_time': datetime.now(), 'pnl': 0
-                        }
-                        st.success(f"🎯 دخلنا {s} | الوقت المتبقي: 60 دقيقة")
+                        try:
+                            pos_type = 1 if side == 'buy' else 2
+                            ex.set_leverage(LEVERAGE, s, params={'openType': 2, 'positionType': pos_type})
+                            ex.create_market_order(s, side, amt, params={'openType': 2, 'positionType': pos_type})
+                            
+                            st.session_state.positions[s] = {'side': side, 'entry': price, 'amount': amt, 'start_time': datetime.now()}
+                            st.info(f"🚀 تم استثمار {ENTRY_USD}$ في {s}")
+                            break # فتح صفقة واحدة في كل دورة لضمان التوزيع
+                        except: continue
 
-            # عرض الجدول المحدث
-            if st.session_state.positions:
-                display_df = pd.DataFrame.from_dict(st.session_state.positions, orient='index')
-                st.table(display_df[['side', 'entry', 'start_time']])
-            
             time.sleep(10)
             st.rerun()
 
     except Exception as e:
-        st.error(f"⚠️ خطأ: {e}")
+        st.error(f"⚠️ تنبيه: {e}")
         time.sleep(10)
         st.rerun()
         
