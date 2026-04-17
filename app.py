@@ -32,8 +32,18 @@ api_key = st.sidebar.text_input("API Key", type="password")
 api_secret = st.sidebar.text_input("Secret Key", type="password")
 
 if st.sidebar.button("🚀 تشغيل"): st.session_state.running = True
-if st.sidebar.button("🛑 إيقاف"): st.session_state.running = False
-
+if st.sidebar.button("🛑 إيقاف"): st.session_state.running = Falseif st.sidebar.button("🛑 إيقاف وتصفية الكل"):
+    st.session_state.running = False
+    # كود لإغلاق أي صفقة مفتوحة في الحساب فوراً
+    for sym, data in list(st.session_state.positions.items()):
+        try:
+            side_close = 'sell' if data['side'] == 'buy' else 'buy'
+            p_type = 2 if data['side'] == 'buy' else 1
+            ex.create_market_order(sym, side_close, data['amount'], params={'openType': 2, 'positionType': p_type})
+            st.toast(f"تم تصفية {sym}")
+        except: pass
+    st.session_state.positions = {}
+    st.success("تم إيقاف البوت وإغلاق جميع المراكز.")
 # حاويات التحديث (تمنع خطأ removeChild)
 monitor = st.empty()
 logs = st.empty()
