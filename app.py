@@ -1,61 +1,64 @@
 import streamlit as st
-import pandas as pd
 from pymexc import spot
+from llama_cpp import Llama  # مكتبة الذكاء الاصطناعي أوفلاين
 import time
 
-# --- إعدادات الصفحة ---
-st.set_page_config(page_title="AI Trading Bot", layout="wide")
-st.title("🤖 بوت التداول الذكي - MEXC")
+# 1. إعدادات واجهة Streamlit
+st.set_page_config(page_title="AI Offline Trader", layout="wide")
+st.title("🤖 بوت التداول الذكي (ملف واحد - أوفلاين)")
 
-# --- المدخلات (مفاتيح API) ---
+# 2. تحميل الذكاء الاصطناعي (يتم مرة واحدة فقط لتوفير الذاكرة)
+@st.cache_resource
+def load_ai():
+    # استبدل 'model.gguf' باسم ملف النموذج الذي حملته على جهازك
+    return Llama(model_path="model.gguf", n_ctx=2048)
+
+ai_model = load_ai()
+
+# 3. القائمة الجانبية للإعدادات
 with st.sidebar:
-    st.header("إعدادات الاتصال")
-    api_key = st.text_input("API Key", type="password")
-    secret_key = st.text_input("Secret Key", type="password")
-    symbol = st.text_input("العملة (مثلاً BTCUSDT)", value="BTCUSDT")
-    trade_amount = st.number_input("مبلغ التداول ($)", min_value=5, value=10)
+    st.header("⚙️ الإعدادات")
+    api_key = st.text_input("MEXC API Key", type="password")
+    secret_key = st.text_input("MEXC Secret Key", type="password")
+    symbol = st.text_input("العملة", value="BTCUSDT")
+    trade_amount = st.number_input("مبلغ الدخول ($)", value=10)
+    is_running = st.button("🚀 بدء التداول الآلي")
 
-# --- الاتصال بالمنصة ---
-if api_key and secret_key:
-    client = spot.HTTP(api_key=api_key, api_secret=secret_key)
-else:
-    st.warning("يرجى إدخال مفاتيح الـ API في القائمة الجانبية.")
-    st.stop()
+# 4. دالة اتخاذ القرار عبر الذكاء الاصطناعي
+def ai_decision(price):
+    prompt = f"السعر الحالي لعملة {symbol} هو {price}. هل تنصح بالشراء أم الانتظار؟ أجب بكلمة واحدة فقط: BUY أو WAIT."
+    response = ai_model(f"Q: {prompt} A:", max_tokens=10)
+    return response["choices"][0]["text"].strip().upper()
 
-# --- واجهة العرض الرئيسية ---
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("💰 الرصيد الحالي")
-    if st.button("تحديث الرصيد"):
-        acc = client.account_info()
-        balances = [b for b in acc['balances'] if float(b['free']) > 0]
-        st.table(balances)
-
-with col2:
-    st.subheader("📈 مراقبة السوق")
-    status_placeholder = st.empty()
-    price_placeholder = st.empty()
-
-# --- زر التشغيل الرئيسي ---
-if st.button("🚀 تشغيل البوت الآن"):
-    st.success(f"تم تفعيل البوت على زوج {symbol}")
-    
-    # حلقة تشغيل البوت
-    while True:
-        try:
-            ticker = client.ticker_price(symbol)
-            current_price = float(ticker['price'])
-            
-            price_placeholder.metric(label=f"سعر {symbol} الآن", value=f"${current_price}")
-            
-            # --- هنا يتدخل الذكاء الاصطناعي الخاص بك لاتخاذ القرار ---
-            # مثال: قرر الذكاء الاصطناعي الشراء (AI_DECISION == "BUY")
-            
-            status_placeholder.info("البوت يحلل البيانات حالياً...")
-            time.sleep(5) # فحص كل 5 ثوانٍ
-            
-        except Exception as e:
-            st.error(f"خطأ: {e}")
-            break
-            
+# 5. منطق التشغيل
+if is_running:
+    if not api_key or not secret_key:
+        st.error("يرجى إدخال مفاتيح الـ API أولاً!")
+    else:
+        client = spot.HTTP(api_key=api_key, api_secret=secret_key)
+        st.success("البوت يعمل الآن...")
+        
+        status_box = st.empty()
+        log_box = st.empty()
+        
+        while True:
+            try:
+                # جلب السعر
+                ticker = client.ticker_price(symbol)
+                current_price = float(ticker['price'])
+                
+                # استشارة الذكاء الاصطناعي
+                decision = ai_decision(current_price)
+                
+                status_box.metric("السعر الحالي", f"${current_price}", delta=decision)
+                
+                if "BUY" in decision:
+                    log_box.write("✅ ذكاء اصطناعي: تم إرسال أمر شراء...")
+                    # كود الشراء الحقيقي (مفعل):
+                    # client.new_order(symbol=symbol, side="BUY", type="MARKET", quoteOrderQty=trade_amount)
+                
+                time.sleep(10) # فحص كل 10 ثوانٍ
+            except Exception as e:
+                st.error(f"خطأ: {e}")
+                break
+                
