@@ -1,90 +1,132 @@
 import streamlit as st
 import ccxt
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- إعدادات الحماية الفائقة ---
+# --- الإعدادات الفنية ---
 LEVERAGE = 5
-MAX_TRADES = 5
-TP_TARGET = 0.05    # 5% ربح
-EMERGENCY_EXIT = -0.015 # هروب مبكر إذا عكست الصفقة 1.5% (قبل الوصول للـ 3%)
+MAX_TRADES = 3
+TP_TARGET = 0.05       # هدف الربح 5%
+EMERGENCY_EXIT = -0.015 # وقف خسارة مبكر 1.5%
 
-st.title("🧠 القناص الذكي - نظام الهروب المبكر")
+st.set_page_config(page_title="القناص الذكي Pro", layout="wide")
 
+# --- إدارة حالة التطبيق ---
 if 'running' not in st.session_state: st.session_state.running = False
 if 'positions' not in st.session_state: st.session_state.positions = {}
 if 'pnl_history' not in st.session_state: st.session_state.pnl_history = 0.0
+if 'logs' not in st.session_state: st.session_state.logs = []
 
-# --- الأزرار والتحكم ---
-api_key = st.sidebar.text_input("API Key (Futures)", type="password")
-api_secret = st.sidebar.text_input("Secret Key (Futures)", type="password")
+def add_log(msg):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    st.session_state.logs.append(f"[{timestamp}] {msg}")
+    if len(st.session_state.logs) > 10: st.session_state.logs.pop(0)
 
-if st.sidebar.button("🚀 تشغيل (12 ساعة)"):
-    st.session_state.running = True
-    st.session_state.start_time = datetime.now()
+# --- الواجهة الجانبية ---
+st.sidebar.title("🛠️ التحكم بالبوت")
+api_key = st.sidebar.text_input("API Key", type="password")
+api_secret = st.sidebar.text_input("Secret Key", type="password")
 
-if st.sidebar.button("🚨 طوارئ: تصفية فورية"):
+if st.sidebar.button("🚀 بدء التشغيل" if not st.session_state.running else "🔄 تحديث العمل"):
+    if api_key and api_secret:
+        st.session_state.running = True
+        add_log("تم تفعيل البوت...")
+    else:
+        st.sidebar.error("يرجى إدخال مفاتيح الـ API")
+
+if st.sidebar.button("🛑 إيقاف كلي"):
     st.session_state.running = False
-    # كود تصفية الصفقات المفتوحة في Futures
+    add_log("تم إيقاف البوت.")
 
-# --- المحرك الفني ---
+st.sidebar.divider()
+st.sidebar.metric("الربح التراكمي", f"${st.session_state.pnl_history:.2f}")
+
+# --- عرض الصفقات والسجلات ---
+col_stats, col_logs = st.columns([2, 1])
+
+with col_stats:
+    st.subheader("📊 المراكز المفتوحة")
+    if st.session_state.positions:
+        st.table(st.session_state.positions)
+    else:
+        st.info("لا توجد صفقات نشطة حالياً.")
+
+with col_logs:
+    st.subheader("📜 السجل اللحظي")
+    for log in reversed(st.session_state.logs):
+        st.caption(log)
+
+# --- المحرك الرئيسي (المنطق البرمجي) ---
 if st.session_state.running:
     try:
-        ex = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'swap'}})
-        
-        while st.session_state.running:
-            # 1. مراقبة الصفقات المفتوحة (التحليل اللحظي)
-            for sym, data in list(st.session_state.positions.items()):
-                t = ex.fetch_ticker(sym)
-                current_price = t['last']
-                
-                # حساب الربح/الخسارة اللحظي
-                pnl = (current_price - data['entry']) / data['entry'] if data['side'] == 'buy' else (data['entry'] - current_price) / data['entry']
-                
-                # --- منطق الهروب المبكر (المراقبة الذكية) ---
-                # إذا وجد البوت أن السعر يعكس ضده بسرعة وبدأ يخسر 1.5%، يهرب فوراً
-                exit_now = False
-                reason = ""
-                
-                if pnl >= TP_TARGET:
-                    exit_now, reason = True, "✅ تم صيد الربح (5%)"
-                elif pnl <= EMERGENCY_EXIT:
-                    exit_now, reason = True, "🏃 هروب مبكر (حماية من خسارة أكبر)"
-                elif (datetime.now() - data['time']).total_seconds() > 3600:
-                    exit_now, reason = True, "⏱️ انتهاء وقت الصفقة (ساعة)"
+        # الربط مع MEXC Futures
+        exchange = ccxt.mexc({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'options': {'defaultType': 'swap'},
+            'enableRateLimit': True
+        })
 
-                if exit_now:
-                    side_to_close = 'sell' if data['side'] == 'buy' else 'buy'
-                    ex.create_market_order(sym, side_to_close, data['amount'])
-                    st.session_state.pnl_history += (pnl * 10) # الربح التقريبي
-                    del st.session_state.positions[sym]
-                    st.warning(f"{reason} في {sym}")
-                    st.rerun()
-
-            # 2. التحليل لفتح صفقات جديدة (شراء/بيع)
-            if len(st.session_state.positions) < MAX_TRADES:
-                symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
-                for s in symbols:
-                    if s in st.session_state.positions: continue
-                    ticker = ex.fetch_ticker(s)
-                    
-                    # استراتيجية القوة النسبية:
-                    if ticker['percentage'] <= -2.5: # هبوط قوي -> ارتداد صعودي (Long)
-                        ex.set_leverage(LEVERAGE, s)
-                        amt = (10.0 * LEVERAGE) / ticker['last']
-                        ex.create_market_order(s, 'buy', amt)
-                        st.session_state.positions[s] = {'side':'buy', 'entry':ticker['last'], 'amount':amt, 'time':datetime.now()}
-                    
-                    elif ticker['percentage'] >= 2.5: # صعود مبالغ فيه -> تصحيح هابط (Short)
-                        ex.set_leverage(LEVERAGE, s)
-                        amt = (10.0 * LEVERAGE) / ticker['last']
-                        ex.create_market_order(s, 'sell', amt)
-                        st.session_state.positions[s] = {'side':'sell', 'entry':ticker['last'], 'amount':amt, 'time':datetime.now()}
+        # 1. تحديث ومراقبة الصفقات المفتوحة
+        for sym, data in list(st.session_state.positions.items()):
+            ticker = exchange.fetch_ticker(sym)
+            curr_price = ticker['last']
             
-            time.sleep(10)
+            # حساب الربح/الخسارة
+            diff = (curr_price - data['entry']) / data['entry']
+            pnl = diff if data['side'] == 'buy' else -diff
+            
+            close_now = False
+            msg = ""
+            
+            if pnl >= TP_TARGET:
+                close_now, msg = True, f"✅ هدف الربح {sym}"
+            elif pnl <= EMERGENCY_EXIT:
+                close_now, msg = True, f"🏃 هروب اضطراري {sym}"
+
+            if close_now:
+                side_close = 'sell' if data['side'] == 'buy' else 'buy'
+                exchange.create_market_order(sym, side_close, data['amount'])
+                st.session_state.pnl_history += (pnl * 20) # تقديري
+                del st.session_state.positions[sym]
+                add_log(msg)
+
+        # 2. البحث عن فرص جديدة
+        if len(st.session_state.positions) < MAX_TRADES:
+            target_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+            for s in target_symbols:
+                if s in st.session_state.positions: continue
+                
+                t = exchange.fetch_ticker(s)
+                change = t['percentage']
+                
+                # استراتيجية بسيطة: دخول عند تغير 1% (للتجربة)
+                trade_side = None
+                if change <= -1.0: trade_side = 'buy'
+                elif change >= 1.0: trade_side = 'sell'
+
+                if trade_side:
+                    exchange.set_leverage(LEVERAGE, s)
+                    # حساب كمية بسيطة (تقريباً 10$ مع الرافعة)
+                    amt = (10.0 * LEVERAGE) / t['last']
+                    
+                    # تنفيذ الصفقة ببارامترات MEXC
+                    exchange.create_market_order(s, trade_side, amt, params={'openType': 2})
+                    
+                    st.session_state.positions[s] = {
+                        'side': trade_side,
+                        'entry': t['last'],
+                        'amount': amt,
+                        'status': 'Active'
+                    }
+                    add_log(f"🚀 صفقة {trade_side} على {s}")
+
+        # تحديث الصفحة كل 10 ثواني تلقائياً
+        time.sleep(10)
+        st.rerun()
 
     except Exception as e:
-        st.error(f"خطأ: {e}")
+        add_log(f"⚠️ خطأ: {str(e)}")
         time.sleep(10)
-
-st.sidebar.metric("إجمالي الربح التقديري", f"${st.session_state.pnl_history:.2f}")
+        st.rerun()
+                
