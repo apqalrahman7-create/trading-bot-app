@@ -2,91 +2,82 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import time
-from datetime import datetime
 
-# --- 🚀 إعدادات القوة العالمية (Global Sniper Settings) ---
+# --- الإعدادات ---
 SYMBOL = 'ORDI/USDT:USDT'
-LEVERAGE = 5               
-ENTRY_AMOUNT = 15          
-TP_TARGET = 0.012          
-SL_LIMIT = -0.008          
+LEVERAGE = 5
+ENTRY_AMOUNT = 15
 
-st.set_page_config(page_title="Global Power Sniper", layout="wide")
-st.title("🌎 قناص عالمي محترف - ORDI Professional")
+st.set_page_config(page_title="Global Sniper", layout="wide")
+st.title("🌎 قناص عالمي محترف - ORDI")
 
-# --- 🧠 المحرك الحسابي المتقدم ---
-def get_signals(df):
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    df['rsi'] = 100 - (100 / (1 + (gain / loss)))
-    df['ema12'] = df['close'].ewm(span=12).mean()
-    df['ema26'] = df['close'].ewm(span=26).mean()
-    df['macd'] = df['ema12'] - df['ema26']
-    df['signal'] = df['macd'].ewm(span=9).mean()
-    return df
-
-# --- 🔐 واجهة التحكم ---
+# 1. إعداد واجهة التحكم (تظهر أولاً)
 with st.sidebar:
-    st.header("🔑 إعدادات الوصول")
+    st.header("🔑 الإعدادات")
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
-    mode = st.toggle("تفعيل التداول الحقيقي 🚀")
+    st.divider()
+    col1, col2 = st.columns(2)
+    start_btn = col1.button("🚀 تشغيل")
+    stop_btn = col2.button("🛑 إيقاف")
 
-if api_key and api_secret:
-    try:
-        # إعداد الاتصال مع تجاوز مشكلة fetchBalance
-        mexc = ccxt.mexc({
-            'apiKey': api_key, 
-            'secret': api_secret, 
-            'options': {'defaultType': 'future'},
-            'enableRateLimit': True
-        })
-        
-        status_box = st.empty()
+if "running" not in st.session_state:
+    st.session_state.running = False
 
-        while True:
-            # 1. جلب البيانات وتحليلها
-            ohlcv = mexc.fetch_ohlcv(SYMBOL, timeframe='5m', limit=100)
-            df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-            df = get_signals(df)
+if start_btn: st.session_state.running = True
+if stop_btn: st.session_state.running = False
+
+# 2. منطقة عرض البيانات
+status_area = st.empty()
+log_area = st.container()
+
+# 3. محرك التداول (يعمل فقط عند الضغط على تشغيل)
+if st.session_state.running:
+    if not api_key or not api_secret:
+        st.error("يرجى إدخال المفاتيح أولاً!")
+    else:
+        try:
+            mexc = ccxt.mexc({
+                'apiKey': api_key, 'secret': api_secret,
+                'options': {'defaultType': 'future'}, 'enableRateLimit': True
+            })
             
-            p, r, m, s, v = df['close'].iloc[-1], df['rsi'].iloc[-1], df['macd'].iloc[-1], df['signal'].iloc[-1], df['vol'].iloc[-1]
-            avg_v = df['vol'].mean()
+            st.success("المحرك يعمل الآن... جاري فحص الفرص")
+            
+            while st.session_state.running:
+                # جلب البيانات
+                ohlcv = mexc.fetch_ohlcv(SYMBOL, timeframe='5m', limit=50)
+                df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
+                
+                # حساب RSI بسيط
+                delta = df['close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
+                price = df['close'].iloc[-1]
 
-            # 2. فحص الصفقات بطريقة MEXC الصحيحة
-            # بدلاً من fetchBalance الشاملة، نبحث عن الصفقات المفتوحة فقط
-            positions = mexc.fetch_positions([SYMBOL])
-            has_pos = False
-            for pos in positions:
-                if float(pos['contracts']) != 0:
-                    has_pos = True
-                    break
+                # فحص الصفقات
+                positions = mexc.fetch_positions([SYMBOL])
+                has_pos = any(float(p['contracts']) != 0 for p in positions)
 
-            # 3. منطق الدخول
-            if not has_pos and mode:
-                # شراء قوي (Long)
-                if r < 35 and m > s and v > avg_v:
-                    amount = ENTRY_AMOUNT / p
-                    mexc.set_leverage(LEVERAGE, SYMBOL)
-                    mexc.create_market_buy_order(SYMBOL, amount)
-                    mexc.create_order(SYMBOL, 'LIMIT', 'sell', amount, p*(1+TP_TARGET), {'reduceOnly': True})
-                    mexc.create_order(SYMBOL, 'STOP_MARKET', 'sell', amount, None, {'stopPrice': p*(1+SL_LIMIT), 'reduceOnly': True})
-                    st.toast("🔥 تم فتح صفقة LONG")
+                with status_area.container():
+                    st.metric("السعر الحالي", f"{price} USDT", f"RSI: {rsi:.2f}")
+                    st.info(f"حالة الحساب: {'يوجد صفقة مفتوحة' if has_pos else 'جاري البحث عن فرصة...'}")
 
-                # بيع قوي (Short)
-                elif r > 65 and m < s and v > avg_v:
-                    amount = ENTRY_AMOUNT / p
-                    mexc.set_leverage(LEVERAGE, SYMBOL)
-                    mexc.create_market_sell_order(SYMBOL, amount)
-                    mexc.create_order(SYMBOL, 'LIMIT', 'buy', amount, p*(1-TP_TARGET), {'reduceOnly': True})
-                    mexc.create_order(SYMBOL, 'STOP_MARKET', 'buy', amount, None, {'stopPrice': p*(1-SL_LIMIT), 'reduceOnly': True})
-                    st.toast("🔥 تم فتح صفقة SHORT")
+                # منطق الدخول
+                if not has_pos:
+                    if rsi <= 32:
+                        mexc.create_market_buy_order(SYMBOL, ENTRY_AMOUNT/price)
+                        st.toast("🎯 تم فتح صفقة شراء!")
+                    elif rsi >= 68:
+                        mexc.create_market_sell_order(SYMBOL, ENTRY_AMOUNT/price)
+                        st.toast("🎯 تم فتح صفقة بيع!")
 
-            status_box.info(f"📊 السعر: {p} | RSI: {r:.2f} | السيولة: {'ممتازة' if v > avg_v else 'عادية'}")
-            time.sleep(20)
+                time.sleep(10)
+                
+        except Exception as e:
+            st.error(f"خطأ: {e}")
+            st.session_state.running = False
+else:
+    st.warning("البوت متوقف حالياً. اضغط على 'تشغيل' من القائمة الجانبية للبدء.")
 
-    except Exception as e:
-        st.error(f"تنبيه: {e}")
-        time.sleep(30)
-        
