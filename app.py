@@ -4,92 +4,95 @@ import pandas as pd
 import time
 from datetime import datetime
 
-# --- 1. إعدادات الخبير (Expert Settings) ---
-# هذه الإعدادات هي سر النجاح: أهداف قريبة لضمان الخروج بربح قبل انعكاس السوق
-LEVERAGE = 3             # رافعة منخفضة لتقليل المخاطر (مهم جداً!)
-ENTRY_AMOUNT_USDT = 12   # مبلغ الدخول لكل صفقة
-TP_TARGET = 0.007        # جني ربح عند 0.7% (مع الرافعة يصبح 2.1% صافي)
-SL_LIMIT = -0.010        # وقف خسارة عند 1% لحماية الحساب من الانهيارات
+# --- 1. إعدادات القناص المطور لـ MEXC ---
+SYMBOL = 'ORDI/USDT:USDT'  # صيغة العقود الآجلة في MEXC
+LEVERAGE = 3               # رافعة منخفضة للأمان
+ENTRY_AMOUNT = 12          # مبلغ الدخول (USDT)
+TP_PERCENT = 0.007         # جني ربح 0.7% (سريع)
+SL_PERCENT = -0.010        # وقف خسارة 1% (حماية)
 RSI_PERIOD = 14
-RSI_BUY_LEVEL = 35       # يشتري فقط عندما يكون السعر "رخيص جداً" (قاع)
-RSI_SELL_LEVEL = 65      # يبيع فقط عندما يكون السعر "متضخم جداً" (قمة)
+RSI_BUY_LEVEL = 35         # دخول شراء عند القاع
+RSI_SELL_LEVEL = 65        # دخول بيع عند القمة
 
-st.set_page_config(page_title="PRO Profit Sniper", layout="wide")
-st.title("💰 PRO Profit Sniper - ORDI/USDT")
+st.set_page_config(page_title="MEXC Sniper Pro", layout="wide")
+st.title("🎯 قناص الأرباح لـ MEXC - ORDI")
 
-# --- دالة حساب RSI الاحترافية ---
-def calculate_rsi(data, period=14):
-    delta = data.diff()
+# --- دالة حساب المؤشرات ---
+def calculate_rsi(df, period=14):
+    delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# --- تهيئة الجلسة ---
+# --- واجهة الإعدادات ---
 if 'running' not in st.session_state: st.session_state.running = False
 
 with st.sidebar:
-    st.header("🔑 Keys")
+    st.header("🔑 إعدادات MEXC API")
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
-    if st.button("🚀 تشغيل محرك الأرباح"):
-        st.session_state.running = True
-    if st.button("🛑 إيقاف آمن"):
-        st.session_state.running = False
+    if st.button("🚀 تشغيل البوت"): st.session_state.running = True
+    if st.button("🛑 إيقاف"): st.session_state.running = False
 
+# --- المحرك الرئيسي ---
 if st.session_state.running:
     try:
-        exchange = ccxt.binance({
-            'apiKey': api_key, 'secret': api_secret,
-            'options': {'defaultType': 'future'}, 'enableRateLimit': True
+        # الاتصال بـ MEXC (عقود آجلة)
+        mexc = ccxt.mexc({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'options': {'defaultType': 'future'},
+            'enableRateLimit': True
         })
-        symbol = "ORDI/USDT"
-        status_box = st.empty()
+
+        status_placeholder = st.empty()
 
         while st.session_state.running:
-            # 1. جلب البيانات وتحليلها
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe='5m', limit=50)
-            df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            df['rsi'] = calculate_rsi(df['c'], RSI_PERIOD)
+            # 1. جلب البيانات
+            ohlcv = mexc.fetch_ohlcv(SYMBOL, timeframe='5m', limit=50)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['rsi'] = calculate_rsi(df, RSI_PERIOD)
             
-            current_price = df['c'].iloc[-1]
-            current_rsi = df['rsi'].iloc[-1]
-            last_vol = df['v'].iloc[-1]
-            avg_vol = df['v'].mean()
+            curr_price = df['close'].iloc[-1]
+            curr_rsi = df['rsi'].iloc[-1]
+            curr_vol = df['volume'].iloc[-1]
+            avg_vol = df['volume'].mean()
 
-            # 2. فحص الصفقات المفتوحة
-            pos = exchange.fetch_balance()['info']['positions']
-            position = next((p for p in pos if p['symbol'] == "ORDIUSDT"), None)
-            has_position = float(position['positionAmt']) != 0 if position else False
+            # 2. فحص الصفقات الحالية
+            balance = mexc.fetch_balance()
+            positions = balance['info']['data'] # مخصص لـ MEXC
+            has_pos = any(float(p['positionAmt']) != 0 for p in positions if p['symbol'] == "ORDI_USDT")
 
-            # 3. منطق "القناص" (Sniper Logic)
-            if not has_position:
-                # إشارة شراء (Long): السعر في القاع (RSI < 35) + سيولة أعلى من المتوسط
-                if current_rsi <= RSI_BUY_LEVEL and last_vol > avg_vol:
-                    st.success(f"🎯 قنص قاع! دخول شراء عند {current_price} (RSI: {current_rsi:.2f})")
-                    exchange.set_leverage(LEVERAGE, symbol)
-                    amount = ENTRY_AMOUNT_USDT / current_price
-                    exchange.create_market_buy_order(symbol, amount)
-                    # أوامر الخروج التلقائية (مهمة جداً لضمان الربح)
-                    exchange.create_order(symbol, 'LIMIT', 'sell', amount, current_price * (1 + TP_TARGET), {'reduceOnly': True})
-                    exchange.create_order(symbol, 'STOP_MARKET', 'sell', amount, None, {'stopPrice': current_price * (1 + SL_LIMIT), 'reduceOnly': True})
+            # 3. منطق القنص
+            if not has_pos:
+                # شرط الشراء (Long)
+                if curr_rsi <= RSI_BUY_LEVEL and curr_vol > avg_vol:
+                    st.success(f"✅ قنص قاع: RSI {curr_rsi:.2f} | شراء عند {curr_price}")
+                    mexc.set_leverage(LEVERAGE, SYMBOL)
+                    qty = ENTRY_AMOUNT / curr_price
+                    mexc.create_market_buy_order(SYMBOL, qty)
+                    # وضع أوامر الخروج فوراً
+                    mexc.create_order(SYMBOL, 'LIMIT', 'sell', qty, curr_price * (1 + TP_PERCENT), {'reduceOnly': True})
+                    mexc.create_order(SYMBOL, 'STOP_MARKET', 'sell', qty, None, {'stopPrice': curr_price * (1 + SL_PERCENT), 'reduceOnly': True})
 
-                # إشارة بيع (Short): السعر في القمة (RSI > 65) + سيولة عالية
-                elif current_rsi >= RSI_SELL_LEVEL and last_vol > avg_vol:
-                    st.warning(f"🎯 قنص قمة! دخول بيع عند {current_price} (RSI: {current_rsi:.2f})")
-                    exchange.set_leverage(LEVERAGE, symbol)
-                    amount = ENTRY_AMOUNT_USDT / current_price
-                    exchange.create_market_sell_order(symbol, amount)
-                    # أوامر الخروج التلقائية
-                    exchange.create_order(symbol, 'LIMIT', 'buy', amount, current_price * (1 - TP_TARGET), {'reduceOnly': True})
-                    exchange.create_order(symbol, 'STOP_MARKET', 'buy', amount, None, {'stopPrice': current_price * (1 - SL_LIMIT), 'reduceOnly': True})
+                # شرط البيع (Short)
+                elif curr_rsi >= RSI_SELL_LEVEL and curr_vol > avg_vol:
+                    st.warning(f"✅ قنص قمة: RSI {curr_rsi:.2f} | بيع عند {curr_price}")
+                    mexc.set_leverage(LEVERAGE, SYMBOL)
+                    qty = ENTRY_AMOUNT / curr_price
+                    mexc.create_market_sell_order(SYMBOL, qty)
+                    # وضع أوامر الخروج فوراً
+                    mexc.create_order(SYMBOL, 'LIMIT', 'buy', qty, curr_price * (1 - TP_PERCENT), {'reduceOnly': True})
+                    mexc.create_order(SYMBOL, 'STOP_MARKET', 'buy', qty, None, {'stopPrice': curr_price * (1 - SL_PERCENT), 'reduceOnly': True})
 
-            with status_box.container():
-                st.info(f"📊 السعر: {current_price} | RSI: {current_rsi:.2f} | السيولة: {'عالية' if last_vol > avg_vol else 'هادئة'}")
-            
-            time.sleep(15) # انتظر 15 ثانية قبل الفحص التالي
+            with status_placeholder.container():
+                st.write(f"⏱️ تحديث: {datetime.now().strftime('%H:%M:%S')}")
+                st.metric("السعر", f"{curr_price} USDT", f"RSI: {curr_rsi:.1f}")
+
+            time.sleep(20)
 
     except Exception as e:
-        st.error(f"⚠️ تنبيه: {e}")
+        st.error(f"⚠️ خطأ اتصال: {e}")
         time.sleep(30)
         
