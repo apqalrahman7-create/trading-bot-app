@@ -3,9 +3,10 @@ import ccxt
 import pandas as pd
 import time
 
-# --- 🚀 إعدادات التنفيذ الفوري ---
-SYMBOLS = ['BTC_USDT', 'ETH_USDT', 'ORDI_USDT', 'SOL_USDT']
-ENTRY_SIZE = 10 # بالدولار
+# --- 🚀 إعدادات التنفيذ الفوري (المصححة لـ MEXC) ---
+SYMBOLS = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'ORDI/USDT:USDT', 'SOL/USDT:USDT']
+ENTRY_USDT = 25  # رفع المبلغ لـ 25$ لضمان تجاوز الحد الأدنى للمنصة
+LEVERAGE = 5 
 
 st.title("⚡ منفذ الصفقات الفوري - MEXC 2026")
 
@@ -16,32 +17,42 @@ with st.sidebar:
 
 if run and api_key and api_secret:
     try:
-        # اتصال مباشر مع تحديد الدومين الجديد لـ 2026 (api.mexc.com)
         mexc = ccxt.mexc({
             'apiKey': api_key,
             'secret': api_secret,
-            'options': {'defaultType': 'swap'},
-            'urls': {'api': {'public': 'https://api.mexc.com/api/v3', 'private': 'https://api.mexc.com/api/v3'}}
+            'options': {'defaultType': 'future'},
+            'enableRateLimit': True
         })
 
         st.success("✅ تم الربط بالمنصة بنجاح")
 
         while run:
-            # فحص الصفقات
+            # 1. جلب الصفقات الحالية
             pos = mexc.fetch_positions()
             active = [p['symbol'] for p in pos if float(p.get('contracts', 0)) != 0]
             
             for symbol in SYMBOLS:
-                if symbol not in active and len(active) < 4:
-                    # جلب السعر الحالي
+                clean_sym = symbol.replace('/', '').replace(':', '')
+                if clean_sym not in active and len(active) < 4:
+                    # جلب بيانات العملة لمعرفة أقل كمية مسموحة (Precision)
+                    market = mexc.market(symbol)
                     price = float(mexc.fetch_ticker(symbol)['last'])
                     
-                    # فتح صفقة شراء فورية للتجربة (بمجرد التشغيل)
-                    mexc.create_market_buy_order(symbol, ENTRY_SIZE / price)
-                    st.toast(f"🎯 تم تنفيذ صفقة فورية على {symbol}")
-                    break # لفتح صفقة واحدة في كل دورة
+                    # حساب الكمية وتقريبها حسب قوانين المنصة
+                    amount = (ENTRY_USDT * LEVERAGE) / price
+                    amount_precision = mexc.amount_to_precision(symbol, amount)
+                    
+                    # ضبط الرافعة قبل الدخول
+                    try: mexc.set_leverage(LEVERAGE, symbol)
+                    except: pass
+
+                    # تنفيذ الأمر
+                    mexc.create_market_buy_order(symbol, amount_precision)
+                    st.toast(f"🎯 تم تنفيذ صفقة ناجحة على {symbol}")
+                    st.success(f"✅ دخلت صفقة {symbol} بكمية {amount_precision}")
             
             time.sleep(30)
     except Exception as e:
         st.error(f"❌ خطأ: {e}")
+        time.sleep(10)
         
