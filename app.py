@@ -2,68 +2,86 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import time
+from datetime import datetime
 
-# --- ⚙️ إعدادات توزيع الرصيد (50 صفقة) ---
-SYMBOLS = ['ORDI_USDT', 'BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'ADA_USDT', 'SUI_USDT', 'PEPE_USDT']
-MAX_TRADES = 50           # السماح بفتح حتى 50 صفقة
-LEVERAGE = 5              # رافعة منخفضة للأمان
-RISK_PER_TRADE = 0.02     # استخدام 2% فقط من المحفظة لكل صفقة (100% / 50 صفقة)
+# --- ⚙️ إعدادات محرك الأرباح (الربح التراكمي) ---
+SYMBOLS = ['ORDI_USDT', 'BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'SUI_USDT', 'PEPE_USDT']
+MAX_TRADES = 5           # تقسيم المحفظة على 5 صفقات فقط لقوة الربح
+LEVERAGE = 5             # رافعة مالية متوازنة
+RISK_PER_TRADE = 0.18    # الدخول بـ 18% من الرصيد (لترك مساحة للهامش والربح التراكمي)
 
-st.title("🎯 قناص MEXC - توزيع المحفظة (50 صفقة)")
+st.set_page_config(page_title="Accumulative Profit Bot", layout="wide")
+st.title("💰 بوت الأرباح التراكمية - النسخة المستقرة")
 
 if 'running' not in st.session_state: st.session_state.running = False
 
 with st.sidebar:
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
-    run = st.toggle("🚀 تشغيل القناص")
+    if st.button("🚀 بدء جني الأرباح"): st.session_state.running = True
+    if st.button("🛑 إيقاف فوري"): st.session_state.running = False
 
-if run and api_key and api_secret:
+# --- المحرك الرئيسي ---
+if st.session_state.running and api_key and api_secret:
     try:
-        mexc = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'future'}})
-        
-        while run:
-            # 1. جلب الرصيد المتاح حالياً
+        mexc = ccxt.mexc({
+            'apiKey': api_key, 
+            'secret': api_secret, 
+            'options': {'defaultType': 'future'},
+            'enableRateLimit': True
+        })
+
+        while st.session_state.running:
+            # 1. جلب الرصيد الحي للربح التراكمي
             balance = mexc.fetch_balance()
-            available_balance = float(balance['info']['data']['availableBalance'])
+            total_bal = float(balance['info']['data']['availableBalance'])
             
-            # 2. جلب الصفقات النشطة
+            # 2. فحص الصفقات المفتوحة
             pos = mexc.fetch_positions()
             active_p = [p for p in pos if float(p.get('contracts', 0)) != 0]
             current_count = len(active_p)
+            active_names = [p['symbol'] for p in active_p]
 
-            st.write(f"💰 رصيد متاح: {available_balance:.2f} | صفقات: {current_count}/{MAX_TRADES}")
+            st.info(f"💰 الرصيد المتاح للتدوير: {total_bal:.2f} USDT | الصفقات: {current_count}/{MAX_TRADES}")
 
             for symbol in SYMBOLS:
                 if current_count >= MAX_TRADES: break
                 
-                # فحص إذا كانت العملة مفتوحة
-                if not any(p['symbol'] == symbol for p in active_p):
+                if symbol not in active_names:
                     try:
-                        ticker = mexc.fetch_ticker(symbol)
-                        price = float(ticker['last'])
-                        
-                        # حساب الكمية (2% من الرصيد المتاح)
-                        trade_amount = available_balance * RISK_PER_TRADE
-                        qty = (trade_amount * LEVERAGE) / price
-                        formatted_qty = float(mexc.amount_to_precision(symbol, qty))
+                        # تحليل سريع قبل الدخول (RSI)
+                        ohlcv = mexc.fetch_ohlcv(symbol, timeframe='1m', limit=20)
+                        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+                        delta = df['c'].diff()
+                        rsi = 100 - (100 / (1 + (delta.clip(lower=0).mean() / -delta.clip(upper=0).mean())))
 
-                        # --- حل خطأ الصورة (إرسال معاملات الهامش) ---
-                        # openType: 2 (Cross Margin), positionType: 1 (Long) or 2 (Short)
-                        side = 'buy' # مثال للشراء، يمكنك إضافة شرط RSI هنا
-                        mexc.set_leverage(LEVERAGE, symbol, {
-                            'openType': 2, 
-                            'positionType': 1 if side == 'buy' else 2
-                        })
+                        # شرط القنص
+                        if rsi <= 35 or rsi >= 65:
+                            side = 'buy' if rsi <= 35 else 'sell'
+                            
+                            # حساب حجم الصفقة (الربح التراكمي)
+                            trade_val = total_bal * RISK_PER_TRADE
+                            price = df['c'].iloc[-1]
+                            qty = (trade_val * LEVERAGE) / price
+                            formatted_qty = float(mexc.amount_to_precision(symbol, qty))
 
-                        # تنفيذ الصفقة
-                        mexc.create_market_order(symbol, side, formatted_qty)
-                        st.success(f"✅ فتح صفقة {symbol} بـ {trade_amount:.2f}$")
-                        current_count += 1
-                        time.sleep(1)
+                            # --- حل خطأ الرافعة المالية ---
+                            try:
+                                mexc.set_leverage(LEVERAGE, symbol, {
+                                    'openType': 2, # Cross Margin
+                                    'positionType': 1 if side == 'buy' else 2
+                                })
+                            except: pass # إذا كانت مضبوطة مسبقاً
+
+                            # تنفيذ الصفقة
+                            mexc.create_market_order(symbol, side, formatted_qty)
+                            st.success(f"🔥 تم فتح صفقة تراكمية لـ {symbol} بقيمة {trade_val:.2f}$")
+                            current_count += 1
+                            time.sleep(1)
                     except: continue
 
-            time.sleep(20)
+            time.sleep(20) # فحص كل 20 ثانية لإعادة الكرة
+
     except Exception as e:
         st.error(f"⚠️ خطأ: {e}")
         time.sleep(10)
