@@ -1,119 +1,95 @@
 import streamlit as st
 import ccxt
 import pandas as pd
-from datetime import datetime, timedelta
 import time
+from datetime import datetime
 
-# --- 1. SETTINGS FOR PREDICTIVE EXPERIMENT ---
-LEVERAGE = 10           # رافعة 10 لاستغلال التوقعات السريعة
-ENTRY_AMOUNT_USDT = 12  
-TP_TARGET = 0.05        # هدف طموح 5% (توقع انفجار)
-SL_LIMIT = -0.025       # وقف خسارة 2.5% لحماية رأس المال
-TRADE_DURATION_MINS = 30 
+# --- 1. إعدادات القناص (Sniper Settings) ---
+LEVERAGE = 5            # رافعة مالية معتدلة لتقليل نسبة المخاطرة
+ENTRY_AMOUNT_USDT = 15  # المبلغ المخصص لكل صفقة
+TP_TARGET = 0.008       # هدف الربح: 0.8% (مع الرافعة يصبح 4% ربح)
+SL_LIMIT = -0.006       # وقف الخسارة: 0.6% (لحماية سريعة من الانعكاس)
+VOL_MULTIPLIER = 1.5    # يدخل فقط إذا كان حجم التداول الحالي 1.5 ضعف المتوسط
 
-st.set_page_config(page_title="AI Future Predictor - Test Lab", layout="wide")
-st.title("🧪 AI Future Predictor (Experimental Mode)")
-st.subheader("تحليل المسار المستقبلي بناءً على قوة الدفع والسيولة")
+st.set_page_config(page_title="Sniper Profit Bot", layout="wide")
+st.title("🎯 Sniper Profit Bot - ORDI/USDT")
 
-# --- INITIALIZE STATE ---
+# --- تهيئة حالة الجلسة ---
 if 'running' not in st.session_state: st.session_state.running = False
-if 'cooldowns' not in st.session_state: st.session_state.cooldowns = {}
-if 'trade_logs' not in st.session_state: st.session_state.trade_logs = []
+if 'logs' not in st.session_state: st.session_state.logs = []
 
-# --- SIDEBAR ---
+# --- الواجهة الجانبية (Sidebar) ---
 with st.sidebar:
-    st.header("Credentials")
+    st.header("🔑 إعدادات الوصول")
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
     st.divider()
-    if st.button("🚀 تشغيل محرك التجربة"):
-        if api_key and api_secret: st.session_state.running = True
+    if st.button("🚀 تشغيل البوت"):
+        if api_key and api_secret:
+            st.session_state.running = True
+            st.success("تم تشغيل محرك القنص!")
+        else:
+            st.error("يرجى إدخال المفاتيح أولاً")
     if st.button("🛑 إيقاف"):
         st.session_state.running = False
 
-# --- PREDICTIVE ENGINE ---
+# --- المحرك الرئيسي ---
 if st.session_state.running:
     try:
-        ex = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'swap'}})
-        balance = ex.fetch_balance()
-        total_usdt = balance['total'].get('USDT', 0)
-        
-        all_pos = ex.fetch_positions()
-        active_positions = [p for p in all_pos if p.get('contracts') and float(p['contracts']) > 0]
+        # الاتصال بمنصة بينانس (العقود الآجلة)
+        exchange = ccxt.binance({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'options': {'defaultType': 'future'},
+            'enableRateLimit': True
+        })
 
-        # عرض البيانات الأساسية
-        st.divider()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Balance", f"${total_usdt:.2f}")
-        c2.metric("Active Slots", f"{len(active_positions)} / 5")
-        c3.metric("Status", "Scanning & Predicting...")
+        symbol = "ORDI/USDT"
+        log_placeholder = st.empty()
 
-        # 1. مراقبة وإغلاق الصفقات (تأمين الربح/الوقت)
-        for p in active_positions:
-            try:
-                symbol, side = p['symbol'], p['side']
-                entry_p = float(p.get('entryPrice') or 0)
-                mark_p = float(p.get('markPrice') or 0)
-                if entry_p <= 0: continue
-
-                pnl = (mark_p - entry_p) / entry_p if side == 'long' else (entry_p - mark_p) / entry_p
-                open_ts = datetime.fromtimestamp(p.get('timestamp', time.time()*1000) / 1000)
-                mins_active = (datetime.now() - open_ts).total_seconds() / 60
-
-                if pnl >= TP_TARGET or pnl <= SL_LIMIT or mins_active >= TRADE_DURATION_MINS:
-                    ex.create_market_order(symbol, 'sell' if side == 'long' else 'buy', p['contracts'], params={'openType': 2})
-                    st.session_state.cooldowns[symbol] = datetime.now() + timedelta(hours=1)
-                    st.session_state.trade_logs.append(f"[{datetime.now().strftime('%H:%M')}] Closed {symbol} | PnL: {pnl*100:.2f}%")
-            except: continue
-
-        # 2. ماسح التنبؤ (فحص العملات الـ 40 الأكثر سيولة)
-        if len(active_positions) < 5:
-            tickers = ex.fetch_tickers()
-            symbols = [s for s in tickers.keys() if s.endswith('/USDT:USDT')]
+        while st.session_state.running:
+            # 1. جلب بيانات السوق (شمعة الـ 5 دقائق)
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe='5m', limit=20)
+            df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
             
-            for s in symbols[:40]:
-                if len(active_positions) >= 5 or s in st.session_state.cooldowns: continue
-                if any(ap['symbol'] == s for ap in active_positions): continue
+            current_price = df['c'].iloc[-1]
+            last_vol = df['v'].iloc[-1]
+            avg_vol = df['v'].mean()
+            price_change = (df['c'].iloc[-1] - df['c'].iloc[-2]) / df['c'].iloc[-2]
 
-                try:
-                    # تحليل "المسار القادم" عبر شمعات الـ 5 دقائق
-                    ohlcv = ex.fetch_ohlcv(s, timeframe='5m', limit=20)
-                    df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                    
-                    last_price = df['c'].iloc[-1]
-                    # قياس "تسارع السعر" في آخر 15 دقيقة
-                    price_velocity = (df['c'].iloc[-1] - df['c'].iloc[-3]) / df['c'].iloc[-3]
-                    # قياس "ضغط السيولة"
-                    volume_surge = df['v'].iloc[-1] / df['v'].mean()
+            # 2. التحقق من وجود صفقات مفتوحة لتجنب التكرار
+            positions = exchange.fetch_positions([symbol])
+            has_position = float(positions[0]['contracts']) > 0
 
-                    trade_side = None
-                    # التنبؤ: إذا كان السعر يتسارع وحجم التداول ارتفع فجأة بضعف المتوسط
-                    if volume_surge > 2.0:
-                        if price_velocity > 0.005: trade_side = 'buy'   # توقع استمرار الانفجار للأعلى
-                        elif price_velocity < -0.005: trade_side = 'sell' # توقع استمرار الانهيار للأسفل
+            # 3. منطق القنص (Sniper Logic)
+            if not has_position:
+                # شرط الشراء (Long): هبوط حاد + انفجار سيولة (توقع ارتداد)
+                if price_change < -0.01 and last_vol > (avg_vol * VOL_MULTIPLIER):
+                    st.toast(f"🎯 قنص صفقة شراء عند {current_price}")
+                    exchange.set_leverage(LEVERAGE, symbol)
+                    order = exchange.create_market_buy_order(symbol, ENTRY_AMOUNT_USDT / current_price)
+                    # إعداد أوامر جني الربح ووقف الخسارة
+                    exchange.create_order(symbol, 'LIMIT', 'sell', (ENTRY_AMOUNT_USDT / current_price), current_price * (1 + TP_TARGET), {'reduceOnly': True})
+                    exchange.create_order(symbol, 'STOP_MARKET', 'sell', (ENTRY_AMOUNT_USDT / current_price), None, {'stopPrice': current_price * (1 + SL_LIMIT), 'reduceOnly': True})
+                
+                # شرط البيع (Short): صعود حاد + انفجار سيولة (توقع تصحيح)
+                elif price_change > 0.01 and last_vol > (avg_vol * VOL_MULTIPLIER):
+                    st.toast(f"🎯 قنص صفقة بيع عند {current_price}")
+                    exchange.set_leverage(LEVERAGE, symbol)
+                    order = exchange.create_market_sell_order(symbol, ENTRY_AMOUNT_USDT / current_price)
+                    # إعداد أوامر جني الربح ووقف الخسارة
+                    exchange.create_order(symbol, 'LIMIT', 'buy', (ENTRY_AMOUNT_USDT / current_price), current_price * (1 - TP_TARGET), {'reduceOnly': True})
+                    exchange.create_order(symbol, 'STOP_MARKET', 'buy', (ENTRY_AMOUNT_USDT / current_price), None, {'stopPrice': current_price * (1 - SL_LIMIT), 'reduceOnly': True})
 
-                    if trade_side:
-                        ex.set_leverage(LEVERAGE, s, params={'openType': 2, 'positionType': (1 if trade_side=='buy' else 2)})
-                        qty = (ENTRY_AMOUNT_USDT * LEVERAGE) / last_price
-                        ex.create_market_order(s, trade_side, float(ex.amount_to_precision(s, qty)), 
-                                              params={'openType': 2, 'positionType': (1 if trade_side=='buy' else 2), 'settle': 'USDT'})
-                        
-                        log_msg = f"🔮 Predicting {trade_side.upper()} on {s} (Velocity: {price_velocity:.2%}, Vol Surge: {volume_surge:.1f}x)"
-                        st.session_state.trade_logs.append(f"[{datetime.now().strftime('%H:%M')}] {log_msg}")
-                        st.info(log_msg)
-                        break 
-                except: continue
+            # تحديث الواجهة
+            with log_placeholder.container():
+                st.write(f"⏱️ آخر تحديث: {datetime.now().strftime('%H:%M:%S')}")
+                st.metric("السعر الحالي", f"{current_price} USDT", f"{price_change:.2%}")
+                st.info(f"حجم التداول الحالي: {last_vol:.2f} (المتوسط: {avg_vol:.2f})")
 
-        # عرض سجل العمليات
-        if st.session_state.trade_logs:
-            with st.expander("📜 Trade History & Logic Logs", expanded=True):
-                for log in reversed(st.session_state.trade_logs[-10:]):
-                    st.write(log)
+            time.sleep(10) # فحص كل 10 ثوانٍ
 
-        time.sleep(30)
-        st.rerun()
     except Exception as e:
-        st.error(f"Waiting for network update... {e}")
-        time.sleep(20)
-        st.rerun()
+        st.error(f"حدث خطأ: {e}")
+        st.session_state.running = False
         
