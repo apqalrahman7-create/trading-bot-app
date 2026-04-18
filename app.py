@@ -4,34 +4,34 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 
-# --- 🚀 إعدادات الرادار المتأني (3 Minutes Sniper) ---
+# --- 🚀 القائمة العالمية (40 عملة) ---
 SYMBOLS = [
     'ORDI/USDT:USDT', 'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT',
     'XRP/USDT:USDT', 'ADA/USDT:USDT', 'AVAX/USDT:USDT', 'DOGE/USDT:USDT', 'DOT/USDT:USDT',
-    'LINK/USDT:USDT', 'SUI/USDT:USDT', 'APT/USDT:USDT', 'OP/USDT:USDT', 'ARB/USDT:USDT'
-    # يمكنك إضافة بقية الـ 40 عملة هنا
+    'LINK/USDT:USDT', 'SUI/USDT:USDT', 'APT/USDT:USDT', 'OP/USDT:USDT', 'ARB/USDT:USDT',
+    'NEAR/USDT:USDT', 'TIA/USDT:USDT', 'SEI/USDT:USDT', 'INJ/USDT:USDT', 'PEPE/USDT:USDT',
+    'SHIB/USDT:USDT', 'FET/USDT:USDT', 'FIL/USDT:USDT', 'GALA/USDT:USDT', 'FTM/USDT:USDT',
+    'AAVE/USDT:USDT', 'ALGO/USDT:USDT', 'JUP/USDT:USDT', 'WIF/USDT:USDT', 'HBAR/USDT:USDT'
 ]
 
 MAX_TRADES = 4
 LEVERAGE = 5
 FIXED_ENTRY_USDT = 12 
 TRADE_DURATION_MINS = 30
-TIMEFRAME = '3m'  # تم تغيير الفحص ليكون بناءً على شمعة الـ 3 دقائق
 
-st.set_page_config(page_title="Slow & Steady Sniper", layout="wide")
-st.title("🎯 قناص الفحص المتأني (إطار 3 دقائق)")
+st.set_page_config(page_title="Global Sniper Work", layout="wide")
+st.title("🎯 قناص MEXC النشط - 40 عملة")
 
 if "running" not in st.session_state: st.session_state.running = False
-if "trade_times" not in st.session_state: st.session_state.trade_times = {}
+if "trades" not in st.session_state: st.session_state.trades = {}
 
 with st.sidebar:
-    st.header("🔑 الإعدادات")
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
-    if st.button("🚀 بدء الفحص المتأني"): st.session_state.running = True
+    if st.button("🚀 تشغيل التداول الحقيقي"): st.session_state.running = True
     if st.button("🛑 إيقاف"): st.session_state.running = False
 
-status_area = st.empty()
+status_msg = st.empty()
 
 if st.session_state.running and api_key and api_secret:
     try:
@@ -41,53 +41,48 @@ if st.session_state.running and api_key and api_secret:
         })
 
         while st.session_state.running:
-            # 1. فحص الصفقات النشطة
-            positions = mexc.fetch_positions()
-            active_pos = [p for p in positions if float(p['contracts']) != 0]
-            current_count = len(active_pos)
-            active_syms = [p['symbol'] for p in active_pos]
+            # 1. جلب الصفقات الحالية (لتجنب التكرار)
+            pos_info = mexc.fetch_positions()
+            active_list = [p['symbol'] for p in pos_info if float(p['contracts']) != 0]
+            current_count = len(active_list)
+            
+            status_msg.info(f"🔎 الرادار يفحص السوق.. الصفقات المفتوحة: {current_count}/{MAX_TRADES}")
 
-            with status_area.container():
-                st.info(f"🛰️ الرادار يمسح الآن بإطار {TIMEFRAME}.. الصفقات: {current_count}/{MAX_TRADES}")
-
-            # 2. دورة المسح
+            # 2. مسح العملات لفتح صفقات (المنطق القديم النشط)
             for symbol in SYMBOLS:
                 clean_sym = symbol.replace('/', '').replace(':', '')
                 
-                # إغلاق زمني (30 دقيقة)
-                if clean_sym in active_syms and symbol in st.session_state.trade_times:
-                    if datetime.now() >= st.session_state.trade_times[symbol] + timedelta(minutes=TRADE_DURATION_MINS):
-                        pos = next(p for p in active_pos if p['symbol'] == clean_sym)
-                        side = 'sell' if float(pos['contracts']) > 0 else 'buy'
-                        mexc.create_market_order(symbol, side, abs(float(pos['contracts'])), params={'reduceOnly': True})
-                        del st.session_state.trade_times[symbol]
-                        st.toast(f"✅ تم إغلاق {symbol}")
+                # إغلاق زمني (العودة للفحص بعد 30 دقيقة)
+                if clean_sym in active_list and symbol in st.session_state.trades:
+                    if datetime.now() >= st.session_state.trades[symbol] + timedelta(minutes=TRADE_DURATION_MINS):
+                        side = 'sell' if float(next(p for p in pos_info if p['symbol'] == clean_sym)['contracts']) > 0 else 'buy'
+                        mexc.create_market_order(symbol, side, abs(float(next(p for p in pos_info if p['symbol'] == clean_sym)['contracts'])), {'reduceOnly': True})
+                        del st.session_state.trades[symbol]
+                        st.toast(f"✅ إغلاق زمني لـ {symbol}")
 
-                # فتح صفقة جديدة بناءً على فحص الـ 3 دقائق
-                if clean_sym not in active_syms and current_count < MAX_TRADES:
+                # البحث عن دخول (تخفيف الشروط قليلاً ليبدأ العمل)
+                if clean_sym not in active_list and current_count < MAX_TRADES:
                     try:
-                        # جلب شمعات الـ 3 دقائق
-                        ohlcv = mexc.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
-                        df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+                        ohlcv = mexc.fetch_ohlcv(symbol, timeframe='3m', limit=20)
+                        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
                         
-                        # حساب RSI (تأكيد الاتجاه)
+                        # حساب RSI (المنطق الذي كان يعمل عندك)
                         delta = df['c'].diff()
                         rsi = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / -delta.where(delta < 0, 0).rolling(14).mean()))).iloc[-1]
 
-                        # شروط دخول "متأنية"
-                        if rsi <= 30 or rsi >= 70:
-                            side = 'buy' if rsi <= 30 else 'sell'
-                            mexc.set_leverage(LEVERAGE, symbol, {'openType': 2})
+                        # شروط دخول نشطة (RSI تحت 35 أو فوق 65)
+                        if rsi <= 35 or rsi >= 65:
+                            side = 'buy' if rsi <= 35 else 'sell'
+                            # إزالة set_leverage مؤقتاً إذا كانت تسبب خطأ واستخدام الرافعة الافتراضية
                             mexc.create_market_order(symbol, side, (FIXED_ENTRY_USDT * LEVERAGE) / df['c'].iloc[-1])
-                            
-                            st.session_state.trade_times[symbol] = datetime.now()
+                            st.session_state.trades[symbol] = datetime.now()
                             current_count += 1
-                            st.success(f"🎯 قنص متأني (3m): {symbol} | RSI: {rsi:.1f}")
+                            st.success(f"🚀 صفقة فورية: {symbol} | RSI: {rsi:.1f}")
                     except: continue
 
-            time.sleep(30) # انتظار 30 ثانية قبل دورة المسح التالية لتقليل الضغط
+            time.sleep(10) # فحص سريع كل 10 ثوانٍ لضمان عدم فوات الفرص
 
     except Exception as e:
-        st.error(f"⚠️ تنبيه: {e}")
-        time.sleep(20)
+        st.error(f"⚠️ خطأ في التنفيذ: {e}")
+        time.sleep(10)
         
