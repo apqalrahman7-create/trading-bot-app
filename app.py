@@ -3,73 +3,72 @@ import ccxt
 import pandas as pd
 import time
 
-# --- 🚀 قائمة الرادار النشط ---
-SYMBOLS = ['ORDI_USDT', 'BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'SUI_USDT']
+# --- ⚙️ إعدادات الربح التراكمي (Compounding) ---
+SYMBOLS = ['ORDI_USDT', 'BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'SUI_USDT']
 MAX_TRADES = 4
 LEVERAGE = 5
-ENTRY_AMOUNT = 12
+# تخصيص 20% من الرصيد المتاح لكل صفقة (100% / 5 صفقات = 20%)
+RISK_PER_TRADE = 0.20 
+TP_PERCENT = 0.012  # جني الربح عند 1.2%
+SL_PERCENT = 0.010  # وقف الخسارة عند 1%
 
-st.set_page_config(page_title="Active Market Sniper", layout="wide")
-st.title("📡 رادار تحليل وقنص السوق - MEXC")
+st.title("💰 قناص الربح التراكمي - MEXC Force")
 
 if 'running' not in st.session_state: st.session_state.running = False
 
 with st.sidebar:
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
-    if st.button("🚀 تشغيل المحرك"): st.session_state.running = True
+    if st.button("🚀 تشغيل محرك الأرباح"): st.session_state.running = True
     if st.button("🛑 إيقاف"): st.session_state.running = False
-
-# مناطق عرض التحليل الحي
-analysis_area = st.empty()
-log_area = st.container()
 
 if st.session_state.running and api_key and api_secret:
     try:
         mexc = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'future'}})
         
         while st.session_state.running:
-            # جلب الصفقات الحالية
+            # 1. جلب الرصيد المتاح "حالياً" (لحساب الربح التراكمي)
+            balance_data = mexc.fetch_balance()
+            available_balance = float(balance_data['info']['data']['availableBalance'])
+            
+            # 2. فحص الصفقات النشطة
             pos = mexc.fetch_positions()
             active_list = [p['symbol'] for p in pos if float(p.get('contracts', 0)) != 0]
+            current_count = len(active_list)
             
-            # --- لوحة التحليل الحي ---
-            with analysis_area.container():
-                st.subheader("📊 تحليل العملات الحالي")
-                cols = st.columns(len(SYMBOLS))
-                
-                for i, symbol in enumerate(SYMBOLS):
-                    try:
-                        ohlcv = mexc.fetch_ohlcv(symbol, timeframe='5m', limit=50)
-                        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                        
-                        # الحسابات
-                        current_p = df['c'].iloc[-1]
-                        ema = df['c'].ewm(span=50).mean().iloc[-1] # متوسط سريع للتحليل
-                        delta = df['c'].diff()
-                        rsi = 100 - (100 / (1 + (delta.clip(lower=0).mean() / -delta.clip(upper=0).mean())))
-                        
-                        # العرض في الأعمدة
-                        cols[i].write(f"**{symbol.split('_')[0]}**")
-                        cols[i].metric("السعر", f"{current_p}")
-                        cols[i].write(f"RSI: {rsi:.1f}")
-                        cols[i].write("📈" if current_p > ema else "📉")
+            st.info(f"💵 الرصيد المتاح للتدوير: {available_balance:.2f} USDT | الصفقات: {current_count}/{MAX_TRADES}")
 
-                        # --- منطق القنص الفوري ---
-                        if symbol not in active_list and len(active_list) < MAX_TRADES:
-                            if rsi <= 40: # شرط الشراء
-                                qty = (ENTRY_AMOUNT * LEVERAGE) / current_p
-                                mexc.create_market_order(symbol, 'buy', float(mexc.amount_to_precision(symbol, qty)))
-                                st.toast(f"🎯 تم قنص شراء {symbol}")
-                            elif rsi >= 60: # شرط البيع
-                                qty = (ENTRY_AMOUNT * LEVERAGE) / current_p
-                                mexc.create_market_order(symbol, 'sell', float(mexc.amount_to_precision(symbol, qty)))
-                                st.toast(f"🎯 تم قنص بيع {symbol}")
+            # 3. محرك القنص
+            for symbol in SYMBOLS:
+                if current_count >= MAX_TRADES: break
+                
+                if symbol not in active_list:
+                    try:
+                        ticker = mexc.fetch_ticker(symbol)
+                        price = float(ticker['last'])
+                        
+                        # --- الحسبة التراكمية ---
+                        # الدخول بـ 20% من رصيدك الحالي
+                        entry_usd = available_balance * RISK_PER_TRADE
+                        qty = (entry_usd * LEVERAGE) / price
+                        fmt_qty = float(mexc.amount_to_precision(symbol, qty))
+
+                        if fmt_qty > 0:
+                            # تنفيذ الدخول
+                            mexc.create_market_buy_order(symbol, fmt_qty)
+                            
+                            # وضع أهداف القنص الفوري في المنصة
+                            tp_p = price * (1 + TP_PERCENT)
+                            sl_p = price * (1 - SL_PERCENT)
+                            mexc.create_order(symbol, 'LIMIT', 'sell', fmt_qty, tp_p, {'reduceOnly': True})
+                            
+                            st.success(f"🔥 صفقة تراكمية: {symbol} بمبلغ {entry_usd:.2f}$")
+                            current_count += 1
+                            active_list.append(symbol)
                     except: continue
 
-            time.sleep(15) # فحص وتحليل كل 15 ثانية
-
+            time.sleep(15) # فحص دوري سريع
     except Exception as e:
-        st.error(f"⚠️ خطأ: {e}")
-        time.sleep(10)
+        st.error(f"⚠️ تنبيه: {e}")
+        time.sleep(20)
         
