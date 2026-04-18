@@ -2,77 +2,64 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- 🚀 الإعدادات النشطة (Active Trading) ---
-SYMBOLS = ['ORDI_USDT', 'BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'ADA_USDT', 'SUI_USDT', 'PEPE_USDT']
+# --- إعدادات القوة والمنطق (2026 Settings) ---
+SYMBOLS = ['ORDI_USDT', 'BTC_USDT', 'SOL_USDT', 'ETH_USDT']
 MAX_TRADES = 4
-LEVERAGE = 5
-FIXED_AMOUNT = 12 # مبلغ الدخول بالدولار
+LEVERAGE = 3             # تقليل الرافعة المالية لـ 3x لزيادة الأمان
+ENTRY_USDT = 10 
+TP = 0.015               # هدف ربح 1.5%
+SL = -0.012              # وقف خسارة صارم 1.2%
 
-st.set_page_config(page_title="Active Sniper", layout="wide")
-st.title("🔥 قناص MEXC النشط (فحص وتداول)")
+st.title("🛡️ Professional Sniper - Safe Mode 2026")
 
-if 'running' not in st.session_state: st.session_state.running = False
-if 'trades' not in st.session_state: st.session_state.trades = {}
+def get_data(mexc, symbol, tf='5m'):
+    ohlcv = mexc.fetch_ohlcv(symbol, timeframe=tf, limit=200)
+    df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+    # إضافة مؤشرات القوة
+    df['ema200'] = df['c'].ewm(span=200).mean()
+    delta = df['c'].diff()
+    up = delta.clip(lower=0).rolling(14).mean()
+    down = -delta.clip(upper=0).rolling(14).mean()
+    df['rsi'] = 100 - (100 / (1 + (up / down)))
+    return df
 
-with st.sidebar:
-    api_key = st.text_input("API Key", type="password")
-    api_secret = st.text_input("Secret Key", type="password")
-    if st.button("🚀 تشغيل التداول"): st.session_state.running = True
-    if st.button("🛑 إيقاف"): st.session_state.running = False
+# واجهة التحكم
+api_key = st.sidebar.text_input("API Key", type="password")
+api_secret = st.sidebar.text_input("Secret Key", type="password")
+run = st.sidebar.toggle("تشغيل المحرك المحترف")
 
-status_log = st.empty()
-
-if st.session_state.running and api_key and api_secret:
+if run and api_key and api_secret:
     try:
-        mexc = ccxt.mexc({
-            'apiKey': api_key, 'secret': api_secret,
-            'options': {'defaultType': 'swap'}, 'enableRateLimit': True
-        })
-
-        while st.session_state.running:
-            # 1. فحص الصفقات المفتوحة
+        mexc = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'swap'}})
+        while run:
             pos = mexc.fetch_positions()
             active_list = [p['symbol'] for p in pos if float(p.get('contracts', 0)) != 0]
-            current_count = len(active_list)
             
-            status_log.info(f"🔎 جاري الفحص.. صفقات نشطة: {current_count}/{MAX_TRADES} | الوقت: {datetime.now().strftime('%H:%M:%S')}")
-
             for symbol in SYMBOLS:
-                # أ. منطق الإغلاق (بعد 30 دقيقة)
-                if symbol in active_list and symbol in st.session_state.trades:
-                    if datetime.now() >= st.session_state.trades[symbol] + timedelta(minutes=30):
-                        mexc.create_market_order(symbol, 'sell', 0, {'reduceOnly': True})
-                        del st.session_state.trades[symbol]
-                        st.toast(f"✅ تم إغلاق {symbol}")
+                if len(active_list) >= MAX_TRADES: break
+                if symbol in active_list: continue
 
-                # ب. منطق التداول الفوري (شروط أسهل للدخول)
-                if symbol not in active_list and current_count < MAX_TRADES:
-                    try:
-                        ohlcv = mexc.fetch_ohlcv(symbol, timeframe='1m', limit=20)
-                        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                        
-                        # حساب RSI سريع (1 دقيقة) لضمان كثرة الصفقات
-                        delta = df['c'].diff()
-                        rsi = 100 - (100 / (1 + (delta.clip(lower=0).mean() / -delta.clip(upper=0).mean())))
+                df = get_data(mexc, symbol)
+                price = df['c'].iloc[-1]
+                rsi = df['rsi'].iloc[-1]
+                ema = df['ema200'].iloc[-1]
+                vol = df['v'].iloc[-1]
+                avg_vol = df['v'].mean()
 
-                        # شروط دخول "نشطة جداً" (40 و 60) لضمان بدء التداول
-                        if rsi <= 40 or rsi >= 60:
-                            side = 'buy' if rsi <= 40 else 'sell'
-                            price = df['c'].iloc[-1]
-                            qty = (FIXED_AMOUNT * LEVERAGE) / price
-                            
-                            # تنفيذ أمر السوق
-                            mexc.create_market_order(symbol, side, qty)
-                            st.session_state.trades[symbol] = datetime.now()
-                            current_count += 1
-                            st.success(f"🎯 تم فتح صفقة {side} على {symbol} (RSI: {rsi:.1f})")
-                    except: continue
+                # --- شروط الدخول الاحترافية (بوابة المنطق) ---
+                # الشراء: السعر فوق EMA (ترند صاعد) + RSI منخفض + انفجار سيولة
+                if price > ema and rsi <= 35 and vol > (avg_vol * 1.5):
+                    mexc.create_market_buy_order(symbol, ENTRY_USDT/price)
+                    st.success(f"🎯 قنص شراء آمن: {symbol}")
+                
+                # البيع: السعر تحت EMA (ترند هابط) + RSI مرتفع + انفجار سيولة
+                elif price < ema and rsi >= 65 and vol > (avg_vol * 1.5):
+                    mexc.create_market_sell_order(symbol, ENTRY_AMOUNT/price)
+                    st.warning(f"🎯 قنص بيع آمن: {symbol}")
 
-            time.sleep(10) # فحص سريع كل 10 ثوانٍ
-
+            time.sleep(20)
     except Exception as e:
-        st.error(f"⚠️ خطأ: {e}")
-        time.sleep(10)
+        st.error(f"خطأ: {e}")
         
