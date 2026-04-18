@@ -4,156 +4,101 @@ import pandas as pd
 from datetime import datetime
 import time
 
-# --- 1. AI GROWTH CONFIGURATION ---
-TP_TARGET = 0.04        # 4% Take Profit per trade
-SL_LIMIT = -0.02        # 2% Stop Loss protection
-TRADE_DURATION_MINS = 30 # Time-based exit for liquidity
-ANALYSIS_TIMEFRAME = '2m' # Fast predictive analysis
+# --- AI GROWTH SETTINGS ---
+TP_TARGET = 0.04        # 4% Take Profit
+SL_LIMIT = -0.02        # 2% Stop Loss
+TRADE_DURATION_MINS = 30 
+ANALYSIS_TIMEFRAME = '1m' # استخدام فريم الدقيقة لسرعة التنفيذ
 
-st.set_page_config(page_title="AI Hyper-Growth Bot", layout="wide")
-st.title("🚀 AI Autonomous Hyper-Growth Engine")
-st.subheader("Dynamic Compounding | Predictive Scaling | Multi-Symbol Scan")
+st.set_page_config(page_title="AI Fast Growth", layout="wide")
+st.title("⚡ AI Ultra-Fast Growth Engine")
 
-# State Management
 if 'running' not in st.session_state: st.session_state.running = False
 if 'positions' not in st.session_state: st.session_state.positions = {}
 
-# --- 2. SIDEBAR CONTROLS ---
-st.sidebar.header("🔑 API Credentials")
-api_key = st.sidebar.text_input("MEXC API Key", type="password")
-api_secret = st.sidebar.text_input("MEXC Secret Key", type="password")
+# --- SIDEBAR ---
+api_key = st.sidebar.text_input("API Key", type="password")
+api_secret = st.sidebar.text_input("Secret Key", type="password")
 
-col_start, col_stop = st.sidebar.columns(2)
-if col_start.button("🚀 START ENGINE"):
+if st.sidebar.button("🚀 ACTIVATE ENGINE NOW"):
     if api_key and api_secret: st.session_state.running = True
-if col_stop.button("🚨 EMERGENCY STOP"):
+if st.sidebar.button("🚨 EMERGENCY STOP"):
     st.session_state.running = False
 
-# --- 3. PREDICTIVE LOGIC ---
-def get_market_prediction(ex, symbol):
-    try:
-        # Scan 2-minute candles for momentum
-        ohlcv = ex.fetch_ohlcv(symbol, timeframe=ANALYSIS_TIMEFRAME, limit=15)
-        df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-        
-        current_p = df['close'].iloc[-1]
-        moving_avg = df['close'].mean()
-        
-        # PREDICTION: Determine if trend will sustain for the next 30 mins
-        if current_p > moving_avg and current_p > df['open'].iloc[-1]:
-            return 'buy'
-        elif current_p < moving_avg and current_p < df['open'].iloc[-1]:
-            return 'sell'
-        return None
-    except:
-        return None
-
-# --- 4. MAIN EXECUTION ENGINE ---
+# --- CORE EXECUTION ---
 if st.session_state.running and api_key and api_secret:
     try:
-        # Connect to MEXC Swap
-        ex = ccxt.mexc({
-            'apiKey': api_key, 
-            'secret': api_secret, 
-            'options': {'defaultType': 'swap'},
-            'enableRateLimit': True
-        })
+        ex = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'swap'}})
         
-        # A. UPDATE COMPOUNDING BASE
+        # 1. Update Portfolio & Compounding (60$ Base)
         balance = ex.fetch_balance()
         total_equity = balance['total'].get('USDT', 0)
-        free_usdt = balance['free'].get('USDT', 0)
         
-        # AUTO-SCALING LOGIC (Leverage & Trade Count increases with balance)
+        # Scaling Logic
         if total_equity < 100:
-            current_leverage = 5
-            max_active_trades = 10
+            current_leverage, max_trades = 5, 10
         elif total_equity < 1000:
-            current_leverage = 10
-            max_active_trades = 15
-        else: # For 2000$ and above
-            current_leverage = 20
-            max_active_trades = 20
+            current_leverage, max_trades = 10, 15
+        else:
+            current_leverage, max_trades = 20, 20
 
-        # Dynamic Entry Calculation (Compound Interest Effect)
-        dynamic_entry_usd = total_equity / max_active_trades
+        dynamic_entry = total_equity / max_trades
 
-        # B. MONITOR & AUTO-EXIT (4% OR 30 MINS)
+        # 2. Monitor Positions
         for sym, data in list(st.session_state.positions.items()):
             try:
                 ticker = ex.fetch_ticker(sym)
-                current_price = ticker['last']
+                pnl = (ticker['last'] - data['entry']) / data['entry'] if data['side'] == 'buy' else (data['entry'] - ticker['last']) / data['entry']
+                mins = (datetime.now() - data['start_time']).total_seconds() / 60
                 
-                # Real-time PNL calculation
-                if data['side'] == 'buy':
-                    pnl = (current_price - data['entry']) / data['entry']
-                else:
-                    pnl = (data['entry'] - current_price) / data['entry']
-                
-                mins_passed = (datetime.now() - data['start_time']).total_seconds() / 60
-                
-                if pnl >= TP_TARGET or pnl <= SL_LIMIT or mins_passed >= TRADE_DURATION_MINS:
-                    side_to_close = 'sell' if data['side'] == 'buy' else 'buy'
-                    p_idx = 2 if data['side'] == 'buy' else 1
-                    ex.create_market_order(sym, side_to_close, data['amount'], params={'openType': 2, 'positionType': p_idx})
+                if pnl >= TP_TARGET or pnl <= SL_LIMIT or mins >= TRADE_DURATION_MINS:
+                    side_close = 'sell' if data['side'] == 'buy' else 'buy'
+                    ex.create_market_order(sym, side_close, data['amount'], params={'openType': 2, 'positionType': (2 if data['side'] == 'buy' else 1)})
                     del st.session_state.positions[sym]
-                    st.toast(f"Closed {sym} | PNL: {pnl*100:.2f}%", icon="💰")
+                    st.toast(f"Closed {sym}")
             except: continue
 
-        # C. PREDICTIVE ENTRY (Scan 40 Symbols)
-        if len(st.session_state.positions) < max_active_trades and free_usdt > dynamic_entry_usd:
-            all_tickers = ex.fetch_tickers()
-            symbols = [s for s in all_tickers.keys() if s.endswith('/USDT:USDT')][:40]
+        # 3. Aggressive Scanning (40 Symbols)
+        if len(st.session_state.positions) < max_trades:
+            tickers = ex.fetch_tickers()
+            symbols = [s for s in tickers.keys() if s.endswith('/USDT:USDT')][:40]
             
             for s in symbols:
-                if s in st.session_state.positions or len(st.session_state.positions) >= max_active_trades: break
+                if s in st.session_state.positions or len(st.session_state.positions) >= max_trades: break
                 
-                t_data = all_tickers[s]
-                # Fix NoneType Error
-                percentage = t_data.get('percentage')
+                t = tickers[s]
+                # إشارة هجومية: الدخول بناءً على أي حركة واضحة في النسبة المئوية
+                percentage = t.get('percentage', 0)
                 if percentage is None: continue
                 
-                prediction = get_market_prediction(ex, s)
-                if prediction:
+                side = 'buy' if percentage > 0.3 else 'sell' if percentage < -0.3 else None
+                
+                if side:
                     try:
-                        # 1. Set Dynamic Leverage
-                        p_idx = 1 if prediction == 'buy' else 2
-                        ex.set_leverage(current_leverage, s, params={'openType': 2, 'positionType': p_idx})
+                        p_idx = 1 if side == 'buy' else 2
+                        ex.set_leverage(current_leverage, s)
+                        amt = float(ex.amount_to_precision(s, (dynamic_entry * current_leverage) / t['last']))
+                        ex.create_market_order(s, side, amt, params={'openType': 2, 'positionType': p_idx})
                         
-                        # 2. Precision & Compounding Amount
-                        last_p = t_data['last']
-                        raw_amt = (dynamic_entry_usd * current_leverage) / last_p
-                        final_amt = float(ex.amount_to_precision(s, raw_amt))
-                        
-                        # 3. Market Execution
-                        ex.create_market_order(s, prediction, final_amt, params={'openType': 2, 'positionType': p_idx})
-                        
-                        # 4. Save State
-                        st.session_state.positions[s] = {
-                            'side': prediction, 'entry': last_p, 'amount': final_amt,
-                            'start_time': datetime.now(), 'invested': dynamic_entry_usd
-                        }
-                        st.info(f"🚀 AI Predicted {prediction.upper()} on {s} (${dynamic_entry_usd:.2f})")
-                        break # One trade per cycle for safety
+                        st.session_state.positions[s] = {'side': side, 'entry': t['last'], 'amount': amt, 'start_time': datetime.now(), 'cost': dynamic_entry}
+                        st.info(f"🚀 AI Executed: {side.upper()} {s} (${dynamic_entry:.2f})")
+                        break 
                     except: continue
 
-        # --- LIVE DASHBOARD ---
+        # Dashboard
         st.divider()
-        col_eq, col_lev, col_size = st.columns(3)
-        col_eq.metric("Total Equity", f"${total_equity:.2f}")
-        col_lev.metric("Current Leverage", f"{current_leverage}X")
-        col_size.metric("Trade Size (T) ", f"${dynamic_entry_usd:.2f}")
-        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Equity", f"${total_equity:.2f}")
+        c2.metric("Leverage", f"{current_leverage}X")
+        c3.metric("Trade Size", f"${dynamic_entry:.2f}")
         if st.session_state.positions:
-            st.write("### 📊 Active Scalping Positions")
-            df_pos = pd.DataFrame(st.session_state.positions).T
-            st.dataframe(df_pos[['side', 'entry', 'invested']], use_container_width=True)
+            st.dataframe(pd.DataFrame(st.session_state.positions).T[['side', 'entry', 'cost']], use_container_width=True)
 
-        time.sleep(20) # Optimized refresh cycle
+        time.sleep(15)
         st.rerun()
 
     except Exception as e:
-        st.warning(f"AI Engine Scanning Markets... {e}")
+        st.warning(f"Scanning for opportunities... {e}")
         time.sleep(10)
         st.rerun()
         
