@@ -75,10 +75,4 @@ if st.session_state.running and api_key and api_secret:
                             active_names.append(symbol)
                     except: continue
 
-            time.sleep(20) # فحص كل 20 ثانية لضمان استقرار الاتصال من الهاتف
-
-    except Exception as e:
-        st.error(f"❌ فشل الاتصال: {str(e)}")
-        st.info("💡 نصيحة: إذا كنت من الهاتف، تأكد من إغلاق أي VPN وجرب التشغيل مرة أخرى.")
-        st.session_state.running = False
-        
+            time.sleep(20)فحص كل 20 ثانية لضمان استقرار الاتصال م
