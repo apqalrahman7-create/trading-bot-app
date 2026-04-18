@@ -4,100 +4,131 @@ import time
 from datetime import datetime
 import pandas as pd
 
-# --- إعدادات النظام التراكمي ---
+# --- 1. CONFIGURATION ---
 LEVERAGE = 5
-MAX_TRADES = 5       # فتح 5 صفقات متوزعة
-TP_TARGET = 0.05    # هدف 5%
-SL_LIMIT = -0.02    # حماية 2%
-TRADE_DURATION_MINS = 30 # حد 30 دقيقة
+MAX_TRADES = 10         
+TP_TARGET = 0.04        # 4% Take Profit
+SL_LIMIT = -0.02        # 2% Stop Loss
+TRADE_DURATION_MINS = 30 
 
-st.set_page_config(page_title="القناص التراكمي Pro", layout="wide")
-st.title("🔄 بوت الاستثمار التراكمي (استخدام الرصيد + الأرباح)")
+st.set_page_config(page_title="AI Compound Manager", layout="wide")
+st.title("🤖 AI Autonomous Compound Manager")
+st.subheader("Real-time Analysis | Dynamic Compounding | 30-Min Exit")
 
+# Initialize Session States
 if 'running' not in st.session_state: st.session_state.running = False
 if 'positions' not in st.session_state: st.session_state.positions = {}
 
-# --- التحكم ---
+# --- 2. SIDEBAR CONTROLS ---
+st.sidebar.header("🔑 API Settings")
 api_key = st.sidebar.text_input("API Key", type="password")
 api_secret = st.sidebar.text_input("Secret Key", type="password")
 
-if st.sidebar.button("🚀 بدء الاستثمار التراكمي"):
-    if api_key and api_secret: st.session_state.running = True
-if st.sidebar.button("🚨 إيقاف وتصفية شاملة"):
-    st.session_state.running = False
+# START BUTTON
+if st.sidebar.button("🚀 START ENGINE"):
+    if api_key and api_secret: 
+        st.session_state.running = True
+        st.sidebar.success("Engine is Running...")
 
-# --- المحرك الرئيسي ---
+# STOP & CLOSE ALL BUTTON
+if st.sidebar.button("🚨 STOP & CLOSE ALL"):
+    st.session_state.running = False
+    st.sidebar.warning("Engine Stopping... Closing Positions.")
+
+# --- 3. TRADING ENGINE ---
 if st.session_state.running:
     try:
-        ex = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'swap'}})
+        ex = ccxt.mexc({
+            'apiKey': api_key, 
+            'secret': api_secret, 
+            'options': {'defaultType': 'swap'},
+            'enableRateLimit': True
+        })
         ex.load_markets()
 
         while st.session_state.running:
-            # 1. جلب الرصيد الحالي (المحفظة + الأرباح المحققة)
+            # A. WALLET & COMPOUNDING CALCULATION
             balance = ex.fetch_balance()
-            total_usdt = balance['total'].get('USDT', 0)
+            total_equity = balance['total'].get('USDT', 0)
             free_usdt = balance['free'].get('USDT', 0)
             
-            # حساب مبلغ الدخول لكل صفقة بناءً على الرصيد الحالي (توزيع 20% لكل صفقة)
-            dynamic_entry_usd = total_usdt / MAX_TRADES
+            # Compounding: Entry = 10% of Total Portfolio (Balance + Profits)
+            dynamic_entry_usd = max(10, total_equity * 0.10) 
 
-            # 2. مراقبة وإغلاق الصفقات
+            # B. MONITOR POSITIONS
             for sym, data in list(st.session_state.positions.items()):
-                t = ex.fetch_ticker(sym)
-                pnl = (t['last'] - data['entry']) / data['entry'] if data['side'] == 'buy' else (data['entry'] - t['last']) / data['entry']
+                ticker = ex.fetch_ticker(sym)
+                current_p = ticker['last']
+                
+                if data['side'] == 'buy':
+                    pnl = (current_p - data['entry']) / data['entry']
+                else:
+                    pnl = (data['entry'] - current_p) / data['entry']
+                
                 mins_passed = (datetime.now() - data['start_time']).total_seconds() / 60
                 
+                # Check Exit Conditions
                 if pnl >= TP_TARGET or pnl <= SL_LIMIT or mins_passed >= TRADE_DURATION_MINS:
-                    p_type = 2 if data['side'] == 'buy' else 1
-                    ex.create_market_order(sym, 'sell' if data['side'] == 'buy' else 'buy', data['amount'], params={'openType': 2, 'positionType': p_type})
+                    side_to_close = 'sell' if data['side'] == 'buy' else 'buy'
+                    pos_type = 2 if data['side'] == 'buy' else 1
+                    ex.create_market_order(sym, side_to_close, data['amount'], params={'openType': 2, 'positionType': pos_type})
                     del st.session_state.positions[sym]
-                    st.success(f"🔓 تم إغلاق {sym} وتحرير السيولة مع الأرباح.")
+                    st.toast(f"Closed {sym} at {pnl*100:.2f}%", icon="✅")
 
-            # 3. فتح صفقات جديدة باستخدام الرصيد المحدث (تراكمي)
-            if len(st.session_state.positions) < MAX_TRADES and free_usdt > 10:
-                tickers = ex.fetch_tickers()
-                forbidden = ['SILVER', 'GOLD', 'OIL', 'BRENT', 'WTI', 'XAUT']
-                symbols = [s for s in tickers.keys() if s.endswith('/USDT:USDT') and not any(x in s for x in forbidden)][:30]
+            # C. MARKET SCAN & ENTRY (40 Symbols)
+            if len(st.session_state.positions) < MAX_TRADES and free_usdt > dynamic_entry_usd:
+                all_tickers = ex.fetch_tickers()
+                symbols = [s for s in all_tickers.keys() if s.endswith('/USDT:USDT')][:40]
                 
                 for s in symbols:
                     if s in st.session_state.positions: continue
                     if len(st.session_state.positions) >= MAX_TRADES: break
                     
-                    t = tickers[s]
-                    change = t['percentage']
-                    side = 'buy' if change > 1.2 else 'sell' if change < -1.2 else None
+                    t_data = all_tickers[s]
+                    change = t_data['percentage']
+                    
+                    # Entry Logic based on Momentum
+                    side = 'buy' if change > 1.5 else 'sell' if change < -1.5 else None
                     
                     if side:
                         try:
-                            # حساب الكمية بناءً على الرصيد المتوفر حالياً (تراكمي)
-                            market = ex.market(s)
-                            min_amt = market['limits']['amount']['min']
-                            # نستخدم dynamic_entry_usd الذي يكبر كلما زاد الرصيد
-                            raw_amt = (dynamic_entry_usd * LEVERAGE) / t['last']
-                            final_amt = float(ex.amount_to_precision(s, max(raw_amt, min_amt)))
-
                             pos_type = 1 if side == 'buy' else 2
                             ex.set_leverage(LEVERAGE, s, params={'openType': 2, 'positionType': pos_type})
+                            
+                            last_price = t_data['last']
+                            raw_amt = (dynamic_entry_usd * LEVERAGE) / last_price
+                            final_amt = float(ex.amount_to_precision(s, raw_amt))
+                            
                             ex.create_market_order(s, side, final_amt, params={'openType': 2, 'positionType': pos_type})
                             
                             st.session_state.positions[s] = {
-                                'side': side, 'entry': t['last'], 'amount': final_amt,
-                                'start_time': datetime.now(), 'invested': dynamic_entry_usd
+                                'side': side, 'entry': last_price, 'amount': final_amt,
+                                'start_time': datetime.now(), 'value': dynamic_entry_usd
                             }
-                            st.info(f"🚀 استثمار تراكمي في {s} بمبلغ {dynamic_entry_usd:.2f}$")
+                            st.info(f"🚀 AI Entered {side.upper()} {s}")
                             break 
                         except: continue
 
-            # عرض الإحصائيات
-            st.sidebar.metric("إجمالي الرصيد الحالي", f"${total_usdt:.2f}")
+            # D. LIVE DASHBOARD
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Portfolio (Compounded)", f"${total_equity:.2f}")
+            col2.metric("Next Trade Capital", f"${dynamic_entry_usd:.2f}")
+            col3.metric("Active Trades", len(st.session_state.positions))
+            
             if st.session_state.positions:
-                st.table(st.session_state.positions)
+                st.table(pd.DataFrame(st.session_state.positions).T[['side', 'entry', 'value']])
 
             time.sleep(15)
             st.rerun()
 
+        # Shutdown sequence (if loop breaks)
+        for sym, data in list(st.session_state.positions.items()):
+            side_to_close = 'sell' if data['side'] == 'buy' else 'buy'
+            ex.create_market_order(sym, side_to_close, data['amount'])
+        st.session_state.positions = {}
+
     except Exception as e:
-        st.error(f"⚠️ تنبيه المحرك: {e}")
+        st.error(f"Engine Error: {e}")
         time.sleep(10)
         st.rerun()
         
