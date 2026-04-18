@@ -4,90 +4,125 @@ import pandas as pd
 from datetime import datetime
 import time
 
-# --- 1. SETTINGS ---
-LEVERAGE = 5
-MAX_TRADES = 10         # يوزع الرصيد على 10 صفقات للنمو التراكمي
-TP_TARGET = 0.04        # هدف 4%
-SL_LIMIT = -0.02        # حماية 2%
-TRADE_DURATION_MINS = 30 
+# --- الإعدادات الإستراتيجية ---
+LEVERAGE = 5            # الرافعة المالية
+MAX_TRADES = 5          # عدد الصفقات المتزامنة (للربح التراكمي)
+TP_TARGET = 0.04        # هدف الربح 4% (يعادل 20% مع الرافعة)
+SL_LIMIT = -0.02        # وقف الخسارة 2% (حماية رأس المال)
+TRADE_DURATION_MINS = 30 # مدة الصفقة القصوى
 
-st.set_page_config(page_title="AI Final Bot", layout="wide")
-st.title("🛡️ AI Final Autonomous Bot")
-st.subheader("تحليل حقيقي | تنفيذ فوري | ربح تراكمي")
+st.set_page_config(page_title="Autonomous AI Trader", layout="wide")
+st.title("🛡️ Autonomous AI Traiding System")
+st.subheader("تحليل الاختراق | ربح تراكمي | إدارة آلية")
 
+# --- إدارة الحالة (Session State) ---
 if 'running' not in st.session_state: st.session_state.running = False
-if 'positions' not in st.session_state: st.session_state.positions = {}
 
-# --- SIDEBAR ---
-api_key = st.sidebar.text_input("API Key", type="password")
-api_secret = st.sidebar.text_input("Secret Key", type="password")
+# --- القائمة الجانبية لإدخال المفاتيح ---
+with st.sidebar:
+    st.header("إعدادات الاتصال")
+    api_key = st.text_input("MEXC API Key", type="password")
+    api_secret = st.text_input("MEXC Secret Key", type="password")
+    if st.button("🚀 بدء تشغيل النظام"):
+        if api_key and api_secret:
+            st.session_state.running = True
+            st.success("تم تفعيل النظام")
+        else:
+            st.error("يرجى إدخال المفاتيح")
 
-if st.sidebar.button("🚀 تشغيل النظام النهائي"):
-    if api_key and api_secret: st.session_state.running = True
-
-# --- THE ENGINE ---
-if st.session_state.running and api_key and api_secret:
+# --- المحرك الرئيسي ---
+if st.session_state.running:
     try:
-        ex = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'swap'}})
-        
-        # جلب الرصيد وحساب مبلغ الدخول التراكمي آلياً
+        # الاتصال بالمنصة
+        ex = ccxt.mexc({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'options': {'defaultType': 'swap'}
+        })
+
+        # 1. جلب الرصيد الإجمالي لحساب الربح التراكمي
         balance = ex.fetch_balance()
-        total_equity = balance['total'].get('USDT', 0)
-        dynamic_entry = total_equity / MAX_TRADES
+        total_usdt = balance['total'].get('USDT', 0)
+        # تقسيم الرصيد الحالي على عدد الصفقات المتاحة
+        dynamic_entry_size = total_usdt / MAX_TRADES
 
-        # 1. مراقبة وإغلاق الصفقات (الهدف، الحماية، أو الوقت)
-        for sym, data in list(st.session_state.positions.items()):
-            try:
-                ticker = ex.fetch_ticker(sym)
-                pnl = (ticker['last'] - data['entry']) / data['entry'] if data['side'] == 'buy' else (data['entry'] - ticker['last']) / data['entry']
-                mins = (datetime.now() - data['start_time']).total_seconds() / 60
-                
-                if pnl >= TP_TARGET or pnl <= SL_LIMIT or (mins >= TRADE_DURATION_MINS and pnl > 0):
-                    ex.create_market_order(sym, 'sell' if data['side'] == 'buy' else 'buy', data['amount'], params={'openType': 2, 'positionType': (2 if data['side'] == 'buy' else 1)})
-                    del st.session_state.positions[sym]
-                    st.success(f"Profit Closed: {sym}")
-            except: continue
+        # 2. جلب وإدارة الصفقات المفتوحة (مباشرة من المنصة)
+        positions = ex.fetch_positions()
+        active_positions = [p for p in positions if float(p['contracts']) > 0]
+        
+        st.divider()
+        col1, col2, col3 = st.columns(3)
+        col1.metric("إجمالي المحفظة (تراكمي)", f"${total_usdt:.2f}")
+        col2.metric("الصفقات المفتوحة", f"{len(active_positions)} / {MAX_TRADES}")
+        col3.metric("حجم الدخول التالي", f"${dynamic_entry_size:.2f}")
 
-        # 2. تحليل السوق وفتح صفقات جديدة (توقع مبني على الزخم)
-        if len(st.session_state.positions) < MAX_TRADES:
+        # 3. مراقبة الإغلاق (الهدف، الخسارة، الوقت)
+        for p in active_positions:
+            symbol = p['symbol']
+            side = p['side']
+            entry_p = float(p['entryPrice'])
+            mark_p = float(p['markPrice'])
+            
+            # حساب الربح/الخسارة غير المحقق
+            pnl = (mark_p - entry_p) / entry_p if side == 'long' else (entry_p - mark_p) / entry_p
+            
+            # حساب وقت فتح الصفقة
+            open_ts = datetime.fromtimestamp(p['timestamp'] / 1000)
+            mins_elapsed = (datetime.now() - open_ts).total_seconds() / 60
+
+            # منطق الخروج
+            if pnl >= TP_TARGET or pnl <= SL_LIMIT or mins_elapsed >= TRADE_DURATION_MINS:
+                order_side = 'sell' if side == 'long' else 'buy'
+                ex.create_market_order(symbol, order_side, p['contracts'], params={'openType': 2})
+                st.toast(f"✅ تم إغلاق {symbol} بنجاح")
+
+        # 4. تحليل السوق وفتح صفقات جديدة (توقع الكسر)
+        if len(active_positions) < MAX_TRADES:
             tickers = ex.fetch_tickers()
-            symbols = [s for s in tickers.keys() if s.endswith('/USDT:USDT')][:40]
+            # البحث في أكثر العملات سيولة
+            symbols = [s for s in tickers.keys() if s.endswith('/USDT:USDT')][:50]
             
             for s in symbols:
-                if s in st.session_state.positions or len(st.session_state.positions) >= MAX_TRADES: break
+                # التأكد من عدم فتح صفقة مكررة لنفس العملة
+                if any(ap['symbol'] == s for ap in active_positions): continue
+                if len(active_positions) >= MAX_TRADES: break
+
+                # تحليل الشموع (فريم 5 دقائق للتوقع القريب)
+                ohlcv = ex.fetch_ohlcv(s, timeframe='5m', limit=15)
+                df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
                 
-                # التحليل: ننظر لآخر 15 دقيقة (توقع المسار)
-                ohlcv = ex.fetch_ohlcv(s, timeframe='1m', limit=15)
-                df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-                curr_p = df['close'].iloc[-1]
-                avg_p = df['close'].mean()
-                
-                # شرط الدخول: زخم صاعد أو هابط حقيقي
-                side = 'buy' if curr_p > avg_p * 1.002 else 'sell' if curr_p < avg_p * 0.998 else None
-                
-                if side:
+                curr_price = df['c'].iloc[-1]
+                high_barrier = df['h'].iloc[-11:-1].max() # أعلى سعر في آخر ساعة تقريباً
+                low_barrier = df['l'].iloc[-11:-1].min()  # أدنى سعر في آخر ساعة تقريباً
+
+                # إشارة الدخول
+                trade_side = None
+                if curr_price > high_barrier: trade_side = 'buy'
+                elif curr_price < low_barrier: trade_side = 'sell'
+
+                if trade_side:
                     try:
                         ex.set_leverage(LEVERAGE, s)
-                        amt = float(ex.amount_to_precision(s, (dynamic_entry * LEVERAGE) / curr_p))
-                        ex.create_market_order(s, side, amt, params={'openType': 2, 'positionType': (1 if side == 'buy' else 2)})
-                        st.session_state.positions[s] = {'side': side, 'entry': curr_p, 'amount': amt, 'start_time': datetime.now()}
-                        st.info(f"🚀 AI Found Opportunity: {side.upper()} {s}")
-                        break 
-                    except: continue
+                        # حساب الكمية بناءً على الرصيد التراكمي والرافعة
+                        amount = (dynamic_entry_size * LEVERAGE) / curr_price
+                        amount_prec = float(ex.amount_to_precision(s, amount))
+                        
+                        ex.create_market_order(s, trade_side, amount_prec, params={'openType': 2, 'positionType': (1 if trade_side == 'buy' else 2)})
+                        st.info(f"🚀 صفقة جديدة: {trade_side.upper()} {s}")
+                        break # فتح صفقة واحدة كل دورة للتأني
+                    except Exception as e:
+                        continue
 
-        # عرض الإحصائيات المحدثة
-        st.divider()
-        c1, c2 = st.columns(2)
-        c1.metric("إجمالي المحفظة (تراكمي)", f"${total_equity:.2f}")
-        c2.metric("حجم كل صفقة حالياً", f"${dynamic_entry:.2f}")
-        if st.session_state.positions:
-            st.dataframe(pd.DataFrame(st.session_state.positions).T[['side', 'entry']], use_container_width=True)
+        # عرض الصفقات الحالية في جدول
+        if active_positions:
+            df_pos = pd.DataFrame(active_positions)[['symbol', 'side', 'entryPrice', 'markPrice']]
+            st.table(df_pos)
 
-        time.sleep(20)
+        time.sleep(30)
         st.rerun()
 
     except Exception as e:
-        st.warning(f"Engine scanning... {e}")
+        st.error(f"خطأ في النظام: {e}")
         time.sleep(10)
         st.rerun()
         
