@@ -4,76 +4,90 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 
-# --- 🚀 القائمة النشطة ---
-SYMBOLS = ['ORDI/USDT:USDT', 'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'LTC/USDT:USDT', 'XRP/USDT:USDT']
-MAX_TRADES = 4
-FIXED_ENTRY_USDT = 12 
+# --- 🚀 إعدادات القناص العالمي (40 عملة) ---
+SYMBOLS = [
+    'ORDI/USDT:USDT', 'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT',
+    'XRP/USDT:USDT', 'ADA/USDT:USDT', 'AVAX/USDT:USDT', 'DOGE/USDT:USDT', 'DOT/USDT:USDT',
+    'SUI/USDT:USDT', 'APT/USDT:USDT', 'OP/USDT:USDT', 'ARB/USDT:USDT', 'NEAR/USDT:USDT'
+    # يمكنك إضافة بقية العملات هنا بنفس الصيغة
+]
 
-st.set_page_config(page_title="MEXC Force Sniper", layout="wide")
-st.title("⚡ قناص MEXC الهجومي - تداول فوري")
+MAX_TRADES = 4
+LEVERAGE = 5
+RISK_PERCENT = 0.15 # الدخول بـ 15% من الرصيد المتاح (ربح تراكمي)
+TRADE_DURATION = 30 # مدة الصفقة بالدقائق
+
+st.set_page_config(page_title="Old Sniper Pro", layout="wide")
+st.title("🎯 قناص MEXC المطور (النسخة العاملة)")
 
 if "running" not in st.session_state: st.session_state.running = False
-if "trades" not in st.session_state: st.session_state.trades = {}
+if "start_times" not in st.session_state: st.session_state.start_times = {}
 
 with st.sidebar:
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
-    if st.button("🚀 تشغيل إجباري"): st.session_state.running = True
+    if st.button("🚀 بدء التداول"): st.session_state.running = True
     if st.button("🛑 إيقاف"): st.session_state.running = False
 
-status = st.empty()
-
+# --- المحرك الرئيسي ---
 if st.session_state.running and api_key and api_secret:
     try:
-        # اتصال مباشر بدون قيود
-        exchange = ccxt.mexc({
+        # الاتصال التقليدي الذي كان يعمل
+        mexc = ccxt.mexc({
             'apiKey': api_key,
             'secret': api_secret,
-            'options': {'defaultType': 'future'},
-            'enableRateLimit': True
+            'options': {'defaultType': 'future'}
         })
 
         while st.session_state.running:
-            # 1. فحص الاتصال الفعلي بالمنصة
-            balance = exchange.fetch_free_balance()
-            status.info(f"🟢 متصل بالمنصة | الرصيد المتاح: {balance.get('USDT', 0)} USDT")
+            # 1. جلب الرصيد والصفقات
+            balance = mexc.fetch_balance()
+            # تعديل طريقة جلب الرصيد لتعمل مع MEXC وتدعم الربح التراكمي
+            available_balance = float(balance['total']['USDT'])
+            
+            pos = mexc.fetch_positions()
+            active_pos = [p for p in pos if float(p['contracts']) != 0]
+            current_count = len(active_pos)
+            active_symbols = [p['symbol'] for p in active_pos]
 
-            # 2. فحص الصفقات المفتوحة
-            pos = exchange.fetch_positions()
-            active_list = [p['symbol'] for p in pos if float(p['contracts']) != 0]
-            current_count = len(active_list)
+            st.write(f"💰 الرصيد الحالي: {available_balance} | الصفقات: {current_count}/{MAX_TRADES}")
 
-            # 3. مسح سريع جداً للفرص
+            # 2. مسح العملات لفتح صفقات
             for symbol in SYMBOLS:
-                if current_count >= MAX_TRADES: break
-                
                 clean_sym = symbol.replace('/', '').replace(':', '')
-                if clean_sym in active_list: continue
+                
+                # إغلاق بعد 30 دقيقة
+                if clean_sym in active_symbols and symbol in st.session_state.start_times:
+                    if datetime.now() >= st.session_state.start_times[symbol] + timedelta(minutes=TRADE_DURATION):
+                        p_info = next(p for p in active_pos if p['symbol'] == clean_sym)
+                        side = 'sell' if float(p_info['contracts']) > 0 else 'buy'
+                        mexc.create_market_order(symbol, side, abs(float(p_info['contracts'])), {'reduceOnly': True})
+                        del st.session_state.start_times[symbol]
+                        st.success(f"⏰ تم إغلاق {symbol}")
 
-                try:
-                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=20)
+                # فتح صفقة جديدة
+                if clean_sym not in active_symbols and current_count < MAX_TRADES:
+                    ohlcv = mexc.fetch_ohlcv(symbol, timeframe='3m', limit=20)
                     df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
                     
-                    # حساب RSI هجومي (أسرع)
+                    # حساب RSI (المنطق القديم)
                     delta = df['c'].diff()
                     rsi = 100 - (100 / (1 + (delta.clip(lower=0).mean() / -delta.clip(upper=0).mean())))
 
-                    # شروط دخول واسعة جداً لضمان بدء العمل (40 و 60)
-                    if rsi <= 40 or rsi >= 60:
-                        side = 'buy' if rsi <= 40 else 'sell'
-                        price = df['c'].iloc[-1]
-                        # فتح الصفقة بأمر سوق مباشر
-                        exchange.create_market_order(symbol, side, FIXED_ENTRY_USDT / price)
-                        st.success(f"🔥 تم تنفيذ صفقة {side} على {symbol} | RSI: {rsi:.1f}")
+                    if rsi <= 35 or rsi >= 65:
+                        side = 'buy' if rsi <= 35 else 'sell'
+                        # حساب حجم الصفقة للربح التراكمي
+                        entry_size = (available_balance * RISK_PERCENT * LEVERAGE) / df['c'].iloc[-1]
+                        
+                        # تنفيذ الأمر
+                        mexc.create_market_order(symbol, side, entry_size)
+                        st.session_state.start_times[symbol] = datetime.now()
                         current_count += 1
-                        time.sleep(1) # مهلة بسيطة بين العمليات
-                except:
-                    continue
+                        st.info(f"🎯 قنص صفقة {side} لـ {symbol}")
 
-            time.sleep(5) # فحص كل 5 ثوانٍ فقط ليكون سريعاً جداً
+            time.sleep(15)
 
     except Exception as e:
-        st.error(f"❌ خطأ اتصال: {e}")
-        st.info("تأكد من تفعيل (Futures Trading) في إعدادات API بموقع MEXC")
-        st.session_state.running = False
+        st.error(f"حدث خطأ: {e}")
+        time.sleep(10)
         
