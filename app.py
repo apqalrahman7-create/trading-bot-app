@@ -2,17 +2,16 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import time
-from datetime import datetime
 
-# --- 🚀 إعدادات قنص الأرباح (Sniper Profit) ---
-SYMBOLS = ['ORDI_USDT', 'BTC_USDT', 'ETH_USDT', 'SOL_USDT']
-MAX_TRADES = 4
-LEVERAGE = 10           # رافعة 10x لتعظيم الربح
-ENTRY_AMOUNT_USDT = 20  # مبلغ الدخول
-TP_PERCENT = 0.02       # قنص الربح عند 2% (مع الرافعة تصبح 20% ربح صافي)
-SL_PERCENT = 0.015      # وقف خسارة عند 1.5% لحماية المال
+# --- ⚙️ إعدادات توزيع الرصيد (50 صفقة) ---
+SYMBOLS = ['ORDI_USDT', 'BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'ADA_USDT', 'SUI_USDT', 'PEPE_USDT']
+MAX_TRADES = 50           # السماح بفتح حتى 50 صفقة
+LEVERAGE = 5              # رافعة منخفضة للأمان
+RISK_PER_TRADE = 0.02     # استخدام 2% فقط من المحفظة لكل صفقة (100% / 50 صفقة)
 
-st.title("🎯 بوت قنص الأرباح الآلي - MEXC")
+st.title("🎯 قناص MEXC - توزيع المحفظة (50 صفقة)")
+
+if 'running' not in st.session_state: st.session_state.running = False
 
 with st.sidebar:
     api_key = st.text_input("API Key", type="password")
@@ -22,49 +21,49 @@ with st.sidebar:
 if run and api_key and api_secret:
     try:
         mexc = ccxt.mexc({'apiKey': api_key, 'secret': api_secret, 'options': {'defaultType': 'future'}})
-        mexc.load_markets()
-
+        
         while run:
-            # 1. فحص الصفقات المفتوحة
+            # 1. جلب الرصيد المتاح حالياً
+            balance = mexc.fetch_balance()
+            available_balance = float(balance['info']['data']['availableBalance'])
+            
+            # 2. جلب الصفقات النشطة
             pos = mexc.fetch_positions()
-            active_p = [p['symbol'] for p in pos if float(p.get('contracts', 0)) != 0]
+            active_p = [p for p in pos if float(p.get('contracts', 0)) != 0]
             current_count = len(active_p)
 
-            st.info(f"🔎 الرادار يبحث عن صيد.. صفقات نشطة: {current_count}/{MAX_TRADES}")
+            st.write(f"💰 رصيد متاح: {available_balance:.2f} | صفقات: {current_count}/{MAX_TRADES}")
 
             for symbol in SYMBOLS:
-                if symbol not in active_p and current_count < MAX_TRADES:
-                    # جلب السعر والتحليل
-                    ohlcv = mexc.fetch_ohlcv(symbol, timeframe='1m', limit=20)
-                    df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                    price = df['c'].iloc[-1]
-                    
-                    # حساب RSI سريع للقنص
-                    delta = df['c'].diff()
-                    rsi = 100 - (100 / (1 + (delta.clip(lower=0).mean() / -delta.clip(upper=0).mean())))
-
-                    # شرط الدخول (قنص القيعان والقمم)
-                    if rsi <= 35 or rsi >= 65:
-                        side = 'buy' if rsi <= 35 else 'sell'
-                        qty = (ENTRY_AMOUNT_USDT * LEVERAGE) / price
+                if current_count >= MAX_TRADES: break
+                
+                # فحص إذا كانت العملة مفتوحة
+                if not any(p['symbol'] == symbol for p in active_p):
+                    try:
+                        ticker = mexc.fetch_ticker(symbol)
+                        price = float(ticker['last'])
+                        
+                        # حساب الكمية (2% من الرصيد المتاح)
+                        trade_amount = available_balance * RISK_PER_TRADE
+                        qty = (trade_amount * LEVERAGE) / price
                         formatted_qty = float(mexc.amount_to_precision(symbol, qty))
 
-                        # تنفيذ الصفقة
-                        mexc.set_leverage(LEVERAGE, symbol)
-                        order = mexc.create_market_order(symbol, side, formatted_qty)
-                        
-                        # --- 🎯 اقتناص الربح الفوري (وضع الأهداف في المنصة) ---
-                        tp_price = price * (1 + TP_PERCENT) if side == 'buy' else price * (1 - TP_PERCENT)
-                        sl_price = price * (1 - SL_PERCENT) if side == 'buy' else price * (1 + SL_PERCENT)
-                        
-                        # وضع أمر جني الربح (يغلق تلقائياً بمجرد لمس السعر)
-                        mexc.create_order(symbol, 'LIMIT', 'sell' if side == 'buy' else 'buy', 
-                                          formatted_qty, tp_price, {'reduceOnly': True})
-                        
-                        st.success(f"✅ تم قنص {symbol}! الهدف وضِع عند {tp_price:.4f}")
-                        current_count += 1
+                        # --- حل خطأ الصورة (إرسال معاملات الهامش) ---
+                        # openType: 2 (Cross Margin), positionType: 1 (Long) or 2 (Short)
+                        side = 'buy' # مثال للشراء، يمكنك إضافة شرط RSI هنا
+                        mexc.set_leverage(LEVERAGE, symbol, {
+                            'openType': 2, 
+                            'positionType': 1 if side == 'buy' else 2
+                        })
 
-            time.sleep(15)
+                        # تنفيذ الصفقة
+                        mexc.create_market_order(symbol, side, formatted_qty)
+                        st.success(f"✅ فتح صفقة {symbol} بـ {trade_amount:.2f}$")
+                        current_count += 1
+                        time.sleep(1)
+                    except: continue
+
+            time.sleep(20)
     except Exception as e:
         st.error(f"⚠️ خطأ: {e}")
         time.sleep(10)
