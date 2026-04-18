@@ -1,36 +1,28 @@
 import streamlit as st
 import ccxt
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
-# --- 1. STRATEGIC SETTINGS (Fast Profit Strategy) ---
-LEVERAGE = 10           # Increased to 10x for better 30-min returns
+# --- 1. STRATEGIC SETTINGS ---
+LEVERAGE = 10           
 ENTRY_AMOUNT_USDT = 12  
-TP_TARGET = 0.03        # 3% price move (30% with 10x leverage)
-SL_LIMIT = -0.015       # 1.5% price move safety
+TP_TARGET = 0.04        # الهدف الأساسي 4%
+SL_LIMIT = -0.02        # وقف الخسارة 2%
+MIN_PROFIT_TO_LOCK = 0.015 # بمجرد وصول الربح لـ 1.5% يبدأ البوت بتأمين الصفقة
 TRADE_DURATION_MINS = 30 
 
-st.set_page_config(page_title="AI Future-Sense Trader", layout="wide")
-st.title("🤖 AI Future-Sense (30-Min High Momentum)")
+st.set_page_config(page_title="AI Smart Secure Trader", layout="wide")
+st.title("🛡️ AI Smart Secure Trader (Profit Protector)")
 
 if 'running' not in st.session_state: st.session_state.running = False
+if 'cooldowns' not in st.session_state: st.session_state.cooldowns = {}
 
 with st.sidebar:
-    st.header("🔑 Exchange Keys")
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
-    st.divider()
-    if st.button("🚀 Start System"): st.session_state.running = True
-    if st.button("🛑 Stop System"): st.session_state.running = False
-
-# Helper for RSI (Momentum Analysis)
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1, + rs))
+    if st.button("🚀 تشغيل النظام الذكي"): st.session_state.running = True
+    if st.button("🛑 إيقاف الطوارئ"): st.session_state.running = False
 
 if st.session_state.running:
     try:
@@ -43,68 +35,78 @@ if st.session_state.running:
         all_pos = ex.fetch_positions()
         active_positions = [p for p in all_pos if p.get('contracts') and float(p['contracts']) > 0]
         
-        st.metric("Portfolio Balance", f"${total_usdt:.2f}")
-        st.write(f"Active Slots: {len(active_positions)} / {max_slots}")
+        st.metric("Total Equity", f"${total_usdt:.2f}")
+        st.write(f"Active Slots: {len(active_positions)}/{max_slots}")
 
-        # --- 2. FAST EXIT MONITOR (30-Min Limit) ---
+        # --- 1. EXIT & PROFIT PROTECTION MONITOR ---
         for p in active_positions:
             try:
                 symbol, side = p['symbol'], p['side']
-                entry_p = float(p.get('entryPrice') or 0)
-                mark_p = float(p.get('markPrice') or 0)
+                entry_p, mark_p = float(p.get('entryPrice') or 0), float(p.get('markPrice') or 0)
                 if entry_p <= 0: continue
 
                 pnl = (mark_p - entry_p) / entry_p if side == 'long' else (entry_p - mark_p) / entry_p
-                
-                # Time limit logic
                 open_ts = datetime.fromtimestamp(p.get('timestamp', time.time()*1000) / 1000)
                 mins_active = (datetime.now() - open_ts).total_seconds() / 60
 
-                if pnl >= TP_TARGET or pnl <= SL_LIMIT or mins_active >= TRADE_DURATION_MINS:
-                    order_side = 'sell' if side == 'long' else 'buy'
-                    ex.create_market_order(symbol, order_side, p['contracts'], params={'openType': 2})
-                    st.success(f"30-Min Target/Limit reached for {symbol}")
+                # --- منطق تأمين الربح الجديد ---
+                # إذا حققت الصفقة ربحاً جيداً (أكبر من 1.5%) وبدأ السعر بالتراجع، نغلق فوراً
+                # سنحتاج لمقارنة سعر العلامة بالسعر العالي للحظة (بسيط هنا عبر PNL)
+                
+                should_close = False
+                if pnl >= TP_TARGET: should_close = True # وصل للهدف الكامل
+                elif pnl <= SL_LIMIT: should_close = True # وصل لوقف الخسارة
+                elif mins_active >= TRADE_DURATION_MINS: should_close = True # انتهى الوقت
+                
+                # إضافة حماية: إذا كان الربح > 1.5% والسعر بدأ ينعكس (هنا نستخدم الفريم الصغير جداً للتأكد)
+                if pnl > MIN_PROFIT_TO_LOCK:
+                    ohlcv_check = ex.fetch_ohlcv(symbol, timeframe='1m', limit=3)
+                    last_close = ohlcv_check[-1][4]
+                    prev_close = ohlcv_check[-2][4]
+                    # إذا كانت الشمعة الحالية عكس اتجاهنا بقوة، نؤمن الربح
+                    if (side == 'long' and last_close < prev_close) or (side == 'short' and last_close > prev_close):
+                        should_close = True
+                        st.toast(f"Profit Locked for {symbol}")
+
+                if should_close:
+                    ex.create_market_order(symbol, 'sell' if side == 'long' else 'buy', p['contracts'], params={'openType': 2})
+                    st.session_state.cooldowns[symbol] = datetime.now() + timedelta(minutes=15)
             except: continue
 
-        # --- 3. FUTURE-SENSE ENTRY (Finding the strongest move) ---
+        # --- 2. MULTI-ENTRY SCANNER ---
         if len(active_positions) < max_slots:
             tickers = ex.fetch_tickers()
             symbols = [s for s in tickers.keys() if s.endswith('/USDT:USDT')]
             
-            for s in symbols[:40]: # Scan the requested 40 pairs
-                if any(ap['symbol'] == s for ap in active_positions): continue
+            for s in symbols[:60]:
                 if len(active_positions) >= max_slots: break
+                if s in st.session_state.cooldowns or any(ap['symbol'] == s for ap in active_positions): continue
 
-                ohlcv = ex.fetch_ohlcv(s, timeframe='5m', limit=30)
-                df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                
-                # Check for "High Volume" (Future indication of big move)
-                avg_vol = df['v'].mean()
-                curr_vol = df['v'].iloc[-1]
-                
-                last_price = df['c'].iloc[-1]
-                high_barrier = df['h'].iloc[-15:-1].max()
-                low_barrier = df['l'].iloc[-11:-1].min()
+                try:
+                    ohlcv = ex.fetch_ohlcv(s, timeframe='5m', limit=20)
+                    df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+                    last_p = df['c'].iloc[-1]
+                    high_break = df['h'].iloc[-15:-1].max()
+                    low_break = df['l'].iloc[-11:-1].min()
+                    curr_vol = df['v'].iloc[-1]
+                    avg_vol = df['v'].mean()
 
-                # Entry only if there is a breakout AND high volume
-                if curr_vol > avg_vol * 1.5: # Volume must be 50% higher than average
-                    trade_side = 'buy' if last_price > high_barrier else 'sell' if last_price < low_barrier else None
-                    
-                    if trade_side:
-                        try:
+                    # شرط دخول قوي: كسر مع حجم تداول مرتفع
+                    if curr_vol > avg_vol * 1.3:
+                        trade_side = 'buy' if last_p > high_break else 'sell' if last_p < low_break else None
+                        if trade_side:
                             pos_type = 1 if trade_side == 'buy' else 2
                             ex.set_leverage(LEVERAGE, s, params={'openType': 2, 'positionType': pos_type})
-                            qty = (ENTRY_AMOUNT_USDT * LEVERAGE) / last_price
-                            qty_prec = float(ex.amount_to_precision(s, qty))
-                            
-                            ex.create_market_order(s, trade_side, qty_prec, params={'openType': 2, 'positionType': pos_type, 'settle': 'USDT'})
-                            st.info(f"🚀 High Volume Breakout: {trade_side.upper()} {s}")
-                            break
-                        except: continue
+                            qty = (ENTRY_AMOUNT_USDT * LEVERAGE) / last_p
+                            ex.create_market_order(s, trade_side, float(ex.amount_to_precision(s, qty)), 
+                                                  params={'openType': 2, 'positionType': pos_type, 'settle': 'USDT'})
+                            active_positions.append({'symbol': s})
+                            st.info(f"🔥 دخلنا فرصة جديدة: {s}")
+                except: continue
 
-        time.sleep(30)
+        time.sleep(25)
         st.rerun()
     except Exception as e:
-        time.sleep(20)
+        time.sleep(10)
         st.rerun()
         
