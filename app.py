@@ -4,26 +4,39 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 
-# --- ⚙️ الإعدادات (نظام الـ 4 صفقات) ---
-SYMBOLS = ['ORDI/USDT:USDT', 'BTC/USDT:USDT', 'SOL/USDT:USDT', 'ETH/USDT:USDT']
-MAX_TRADES = 4
-LEVERAGE = 5
-ENTRY_AMOUNT = 12
-TRADE_DURATION_MINS = 30
+# --- 🚀 إعدادات الرادار والربح التراكمي ---
+SYMBOLS = [
+    'ORDI/USDT:USDT', 'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT',
+    'XRP/USDT:USDT', 'ADA/USDT:USDT', 'AVAX/USDT:USDT', 'DOGE/USDT:USDT', 'DOT/USDT:USDT',
+    'LINK/USDT:USDT', 'MATIC/USDT:USDT', 'SUI/USDT:USDT', 'APT/USDT:USDT', 'OP/USDT:USDT',
+    'ARB/USDT:USDT', 'LTC/USDT:USDT', 'NEAR/USDT:USDT', 'TIA/USDT:USDT', 'SEI/USDT:USDT',
+    'INJ/USDT:USDT', 'STX/USDT:USDT', 'FIL/USDT:USDT', 'RNDR/USDT:USDT', 'PEPE/USDT:USDT',
+    'SHIB/USDT:USDT', 'FET/USDT:USDT', 'AGIX/USDT:USDT', 'GALA/USDT:USDT', 'FTM/USDT:USDT',
+    'DYDX/USDT:USDT', 'AAVE/USDT:USDT', 'IMX/USDT:USDT', 'ALGO/USDT:USDT', 'KAS/USDT:USDT',
+    'BONK/USDT:USDT', 'JUP/USDT:USDT', 'PYTH/USDT:USDT', 'WIF/USDT:USDT', 'HBAR/USDT:USDT'
+]
 
-st.set_page_config(page_title="Multi-Sniper Pro", layout="wide")
-st.title("🚀 قناص MEXC الاحترافي (4 صفقات)")
+MAX_TRADES = 4           # أقصى عدد صفقات متزامنة
+LEVERAGE = 5             # الرافعة المالية
+RISK_PER_TRADE = 0.20    # المخاطرة بـ 20% من رصيد المحفظة لكل صفقة (للربح التراكمي)
+TRADE_DURATION_MINS = 30 # مدة الصفقة
+
+st.set_page_config(page_title="Compound Radar 40", layout="wide")
+st.title("💰 رادار القناص العالمي - نظام الربح التراكمي")
 
 if "running" not in st.session_state: st.session_state.running = False
-if "trade_start_times" not in st.session_state: st.session_state.trade_start_times = {}
+if "trade_times" not in st.session_state: st.session_state.trade_times = {}
 
 with st.sidebar:
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("Secret Key", type="password")
-    if st.button("🚀 تشغيل"): st.session_state.running = True
+    st.divider()
+    if st.button("🚀 تشغيل محرك الأرباح"): st.session_state.running = True
     if st.button("🛑 إيقاف"): st.session_state.running = False
+    st.info("نظام الربح التراكمي: مفعّل ✅")
 
-status_placeholders = st.columns(len(SYMBOLS))
+log_area = st.empty()
+metrics_area = st.columns(4)
 
 if st.session_state.running and api_key and api_secret:
     try:
@@ -33,52 +46,66 @@ if st.session_state.running and api_key and api_secret:
         })
 
         while st.session_state.running:
-            # 1. جلب الصفقات المفتوحة حالياً
-            pos_data = mexc.fetch_positions()
-            active_positions = [p for p in pos_data if float(p['contracts']) != 0]
+            # 1. جلب الرصيد الحالي للربح التراكمي
+            balance = mexc.fetch_balance()
+            total_balance = float(balance['total']['USDT'])
+            
+            # 2. فحص الصفقات المفتوحة
+            positions = mexc.fetch_positions()
+            active_positions = [p for p in positions if float(p['contracts']) != 0]
             current_count = len(active_positions)
+            active_syms = [p['symbol'] for p in active_positions]
 
-            for i, symbol in enumerate(SYMBOLS):
-                # جلب البيانات وحساب RSI
-                ohlcv = mexc.fetch_ohlcv(symbol, timeframe='5m', limit=50)
-                df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-                delta = df['c'].diff()
-                rsi = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / -delta.where(delta < 0, 0).rolling(14).mean()))).iloc[-1]
-                price = df['c'].iloc[-1]
+            # 3. تحديث الواجهة بالرصيد
+            metrics_area[0].metric("إجمالي المحفظة", f"{total_balance:.2f} USDT")
+            metrics_area[1].metric("الصفقات النشطة", f"{current_count}/{MAX_TRADES}")
 
-                status_placeholders[i].metric(symbol.split('/')[0], f"{price}", f"RSI: {rsi:.1f}")
+            # 4. مسح الـ 40 عملة
+            for symbol in SYMBOLS:
+                clean_sym = symbol.replace('/', '').replace(':', '')
+                
+                # إغلاق الصفقات المنتهية زمنياً
+                if clean_sym in active_syms and symbol in st.session_state.trade_times:
+                    if datetime.now() >= st.session_state.trade_times[symbol] + timedelta(minutes=TRADE_DURATION_MINS):
+                        pos = next(p for p in active_positions if p['symbol'] == clean_sym)
+                        side = 'sell' if float(pos['contracts']) > 0 else 'buy'
+                        mexc.create_market_order(symbol, side, abs(float(pos['contracts'])), params={'reduceOnly': True})
+                        del st.session_state.trade_times[symbol]
+                        st.toast(f"⏰ جني أرباح زمنية لـ {symbol}")
+                        continue
 
-                # فحص إذا كانت العملة مفتوحة حالياً
-                clean_symbol = symbol.replace('/', '').replace(':', '')
-                is_open = any(p['symbol'] == clean_symbol for p in active_positions)
-
-                # أ. منطق الدخول (إذا وجد فرصة والعدد أقل من 4)
-                if not is_open and current_count < MAX_TRADES:
-                    side = None
-                    if rsi <= 32: side = 'buy'
-                    elif rsi >= 68: side = 'sell'
-
-                    if side:
-                        # حل مشكلة setLeverage في MEXC (إضافة المعاملات المطلوبة)
-                        try:
-                            mexc.set_leverage(LEVERAGE, symbol, {'openType': 2, 'positionType': 1 if side == 'buy' else 2})
-                        except: pass 
+                # فتح صفقات جديدة (ربح تراكمي)
+                if clean_sym not in active_syms and current_count < MAX_TRADES:
+                    try:
+                        ohlcv = mexc.fetch_ohlcv(symbol, timeframe='5m', limit=20)
+                        df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
                         
-                        mexc.create_market_order(symbol, side, ENTRY_AMOUNT/price)
-                        st.session_state.trade_start_times[symbol] = datetime.now()
-                        st.toast(f"✅ تم فتح صفقة {side} لـ {symbol}")
+                        # حساب RSI
+                        delta = df['c'].diff()
+                        up, down = delta.copy(), delta.copy()
+                        up[up < 0] = 0; down[down > 0] = 0
+                        rsi = 100 - (100 / (1 + (up.rolling(14).mean() / -down.rolling(14).mean()))).iloc[-1]
 
-                # ب. منطق الخروج (بعد 30 دقيقة)
-                if is_open and symbol in st.session_state.trade_start_times:
-                    if datetime.now() >= st.session_state.trade_start_times[symbol] + timedelta(minutes=TRADE_DURATION_MINS):
-                        pos = next(p for p in active_positions if p['symbol'] == clean_symbol)
-                        exit_side = 'sell' if float(pos['contracts']) > 0 else 'buy'
-                        mexc.create_market_order(symbol, exit_side, abs(float(pos['contracts'])), params={'reduceOnly': True})
-                        del st.session_state.trade_start_times[symbol]
-                        st.toast(f"⏰ إغلاق زمنية لـ {symbol}")
+                        side = None
+                        if rsi <= 30: side = 'buy'
+                        elif rsi >= 70: side = 'sell'
 
-            time.sleep(20)
+                        if side:
+                            # حساب حجم الصفقة بناءً على الرصيد الحالي (تراكمي)
+                            # نستخدم 20% من الرصيد الحالي لكل صفقة
+                            trade_size_usdt = total_balance * RISK_PER_TRADE
+                            
+                            mexc.set_leverage(LEVERAGE, symbol, {'openType': 2})
+                            mexc.create_market_order(symbol, side, trade_size_usdt / df['c'].iloc[-1])
+                            
+                            st.session_state.trade_times[symbol] = datetime.now()
+                            current_count += 1
+                            st.success(f"🎯 صفقة تراكمية: {side} {symbol} بمبلغ {trade_size_usdt:.2f}$")
+                    except: continue
+
+            time.sleep(15)
+
     except Exception as e:
         st.error(f"خطأ: {e}")
-        time.sleep(10)
-        
+        time.sleep(20)
+                            
